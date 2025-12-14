@@ -19,6 +19,7 @@ go get github.com/deepworx/go-utils
 | otel | `pkg/otel` | OpenTelemetry initialization |
 | tracing | `pkg/tracing` | Manual span creation helpers |
 | postgres | `pkg/postgres` | Database utilities with tracing |
+| slogutil | `pkg/slogutil` | Global slog logger setup |
 | koanfutil | `pkg/koanfutil` | Koanf configuration helpers |
 | jwtauth | `pkg/connectrpc/jwtauth` | JWT authentication interceptor |
 | recovery | `pkg/connectrpc/recovery` | Panic recovery interceptor |
@@ -86,6 +87,16 @@ err := tracing.WithSpan(ctx, "operation", func(ctx context.Context) error {
 result, err := tracing.WithSpanResult(ctx, "fetch", func(ctx context.Context) (User, error) {
     return fetchUser(ctx)
 })
+```
+
+### slogutil
+
+Configure the global slog logger with level and format.
+
+```go
+slogutil.Setup(slogutil.Config{Level: "debug", Format: "json"})
+// or with defaults (level: info, format: text)
+slogutil.Setup(slogutil.DefaultConfig())
 ```
 
 ### koanfutil
