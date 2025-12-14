@@ -24,6 +24,7 @@ go get github.com/deepworx/go-utils
 | logging | `pkg/connectrpc/logging` | Request/response logging interceptor |
 | requestid | `pkg/connectrpc/requestid` | Request ID propagation interceptor |
 | errors | `pkg/connectrpc/errors` | Error mapping interceptor |
+| deadline | `pkg/connectrpc/deadline` | Deadline enforcement interceptor |
 | otelconnect | `connectrpc.com/otelconnect` | OpenTelemetry tracing/metrics (external) |
 | validate | `connectrpc.com/validate` | Request validation with protovalidate (external) |
 
@@ -187,6 +188,20 @@ Error mapping priority:
 5. Other errors → `CodeInternal` (message: "internal error")
 
 Mapped errors (1-4) preserve original message. Unmapped errors (5) hide details.
+
+### connectrpc/deadline
+
+Enforces deadlines on server-side unary calls. Applies a default timeout when none exists, and caps existing deadlines to a maximum.
+
+```go
+mux.Handle(servicepb.NewServiceHandler(
+    &Server{},
+    connect.WithInterceptors(deadline.NewInterceptor(deadline.Config{
+        DefaultTimeout: 30 * time.Second, // applied when no deadline exists
+        MaxTimeout:     60 * time.Second, // caps existing deadlines (0 = no cap)
+    })),
+))
+```
 
 ### connectrpc/tracing (via otelconnect)
 
