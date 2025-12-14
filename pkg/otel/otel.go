@@ -18,8 +18,17 @@ import (
 
 // Config holds the configuration for OpenTelemetry setup.
 type Config struct {
-	ServiceName    string
-	ServiceVersion string
+	// ServiceName is the name of the service. Required.
+	ServiceName string `koanf:"service_name"`
+
+	// ServiceVersion is the version of the service. Required.
+	ServiceVersion string `koanf:"service_version"`
+}
+
+// DefaultConfig returns a Config with default values.
+// ServiceName and ServiceVersion are required and must be set by the caller.
+func DefaultConfig() Config {
+	return Config{}
 }
 
 // Setup initializes OpenTelemetry providers and registers shutdown handlers.

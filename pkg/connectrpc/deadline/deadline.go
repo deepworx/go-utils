@@ -12,12 +12,20 @@ import (
 type Config struct {
 	// DefaultTimeout is applied when the incoming context has no deadline.
 	// Must be positive (> 0).
-	DefaultTimeout time.Duration
+	DefaultTimeout time.Duration `koanf:"default_timeout"`
 
 	// MaxTimeout caps existing deadlines to min(existingDeadline, MaxTimeout).
 	// Zero means no cap is applied (only DefaultTimeout is used).
 	// If positive, must be >= DefaultTimeout.
-	MaxTimeout time.Duration
+	MaxTimeout time.Duration `koanf:"max_timeout"`
+}
+
+// DefaultConfig returns a Config with sensible default values.
+func DefaultConfig() Config {
+	return Config{
+		DefaultTimeout: 30 * time.Second,
+		MaxTimeout:     300 * time.Second,
+	}
 }
 
 // NewInterceptor creates a Connect RPC interceptor that enforces deadlines.

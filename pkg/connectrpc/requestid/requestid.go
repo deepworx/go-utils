@@ -15,8 +15,14 @@ import (
 // Config holds configuration for the request ID interceptor.
 type Config struct {
 	// HeaderName is the HTTP header to read request IDs from.
-	// Defaults to "X-Request-ID" if empty.
-	HeaderName string
+	HeaderName string `koanf:"header_name"`
+}
+
+// DefaultConfig returns a Config with sensible default values.
+func DefaultConfig() Config {
+	return Config{
+		HeaderName: "X-Request-ID",
+	}
 }
 
 // NewInterceptor creates a Connect RPC interceptor that propagates or generates request IDs.

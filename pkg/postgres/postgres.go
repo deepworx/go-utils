@@ -19,27 +19,34 @@ import (
 type Config struct {
 	// DSN is the PostgreSQL connection string.
 	// Required. Example: "postgres://user:pass@localhost:5432/db?sslmode=disable"
-	DSN string
+	DSN string `koanf:"dsn"`
 
 	// MaxConns is the maximum number of connections in the pool.
-	// Defaults to 10 if zero.
-	MaxConns int32
+	MaxConns int32 `koanf:"max_conns"`
 
 	// MinConns is the minimum number of connections to keep open.
-	// Defaults to 2 if zero.
-	MinConns int32
+	MinConns int32 `koanf:"min_conns"`
 
 	// MaxConnLifetime is the maximum lifetime of a connection.
-	// Defaults to 1 hour if zero.
-	MaxConnLifetime time.Duration
+	MaxConnLifetime time.Duration `koanf:"max_conn_lifetime"`
 
 	// MaxConnIdleTime is the maximum time a connection can be idle.
-	// Defaults to 30 minutes if zero.
-	MaxConnIdleTime time.Duration
+	MaxConnIdleTime time.Duration `koanf:"max_conn_idle_time"`
 
 	// HealthCheckPeriod is the interval between health checks.
-	// Defaults to 1 minute if zero.
-	HealthCheckPeriod time.Duration
+	HealthCheckPeriod time.Duration `koanf:"health_check_period"`
+}
+
+// DefaultConfig returns a Config with sensible default values.
+// DSN is required and must be set by the caller.
+func DefaultConfig() Config {
+	return Config{
+		MaxConns:          10,
+		MinConns:          2,
+		MaxConnLifetime:   time.Hour,
+		MaxConnIdleTime:   30 * time.Minute,
+		HealthCheckPeriod: time.Minute,
+	}
 }
 
 // NewPool creates a new PostgreSQL connection pool with tracing.

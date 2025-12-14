@@ -21,16 +21,16 @@ import (
 // Use dot notation for nested claims (e.g., "realm_access.roles" for Keycloak).
 type ClaimsMapping struct {
 	// UserID is the JWT claim path for user ID (e.g., "sub", "user_id").
-	UserID string
+	UserID string `koanf:"user_id"`
 
 	// TenantID is the JWT claim path for tenant ID (e.g., "tenant_id", "org.id").
-	TenantID string
+	TenantID string `koanf:"tenant_id"`
 
 	// Roles is the JWT claim path for roles (e.g., "roles", "realm_access.roles").
-	Roles string
+	Roles string `koanf:"roles"`
 
 	// Permissions is the JWT claim path for permissions (e.g., "permissions", "scope").
-	Permissions string
+	Permissions string `koanf:"permissions"`
 }
 
 // Config holds configuration for the JWT authentication interceptor.
@@ -38,27 +38,36 @@ type Config struct {
 	// JWKSURL is the URL to fetch JSON Web Key Set
 	// (e.g., "https://idp.example.com/.well-known/jwks.json").
 	// Required.
-	JWKSURL string
+	JWKSURL string `koanf:"jwks_url"`
 
 	// Issuer is the expected "iss" claim value.
 	// Required.
-	Issuer string
+	Issuer string `koanf:"issuer"`
 
 	// Audience is the expected "aud" claim value.
 	// Required.
-	Audience string
+	Audience string `koanf:"audience"`
 
 	// ClaimsMapping defines how JWT claims map to application claims.
-	// If nil, defaults are used: UserID="sub", others empty.
-	ClaimsMapping *ClaimsMapping
+	ClaimsMapping *ClaimsMapping `koanf:"claims_mapping"`
 
 	// HTTPTimeout is the timeout for JWKS fetch requests.
-	// Defaults to 10 seconds if zero.
-	HTTPTimeout time.Duration
+	HTTPTimeout time.Duration `koanf:"http_timeout"`
 
 	// Leeway allows clock skew tolerance for exp/nbf/iat validation.
-	// Defaults to 1 minute if zero.
-	Leeway time.Duration
+	Leeway time.Duration `koanf:"leeway"`
+}
+
+// DefaultConfig returns a Config with sensible default values.
+// JWKSURL, Issuer, and Audience are required and must be set by the caller.
+func DefaultConfig() Config {
+	return Config{
+		HTTPTimeout: 10 * time.Second,
+		Leeway:      time.Minute,
+		ClaimsMapping: &ClaimsMapping{
+			UserID: "sub",
+		},
+	}
 }
 
 // Authenticator validates JWT tokens and extracts claims.

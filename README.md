@@ -19,6 +19,7 @@ go get github.com/deepworx/go-utils
 | otel | `pkg/otel` | OpenTelemetry initialization |
 | tracing | `pkg/tracing` | Manual span creation helpers |
 | postgres | `pkg/postgres` | Database utilities with tracing |
+| koanfutil | `pkg/koanfutil` | Koanf configuration helpers |
 | jwtauth | `pkg/connectrpc/jwtauth` | JWT authentication interceptor |
 | recovery | `pkg/connectrpc/recovery` | Panic recovery interceptor |
 | logging | `pkg/connectrpc/logging` | Request/response logging interceptor |
@@ -86,6 +87,22 @@ result, err := tracing.WithSpanResult(ctx, "fetch", func(ctx context.Context) (U
     return fetchUser(ctx)
 })
 ```
+
+### koanfutil
+
+Helpers for [koanf](https://github.com/knadh/koanf) configuration loading.
+
+```go
+k := koanf.New(".")
+k.Load(koanfutil.WithDefaults(postgres.DefaultConfig()), nil) // load defaults
+k.Load(file.Provider("config.toml"), toml.Parser())           // override with file
+k.Load(koanfutil.FileResolver(k), nil)                        // resolve file:// URIs
+```
+
+- `WithDefaults(T)` - Load struct as default values (uses `koanf` tags)
+- `FileResolver(k)` - Resolve `file:///path` URIs to file contents
+
+All packages provide `DefaultConfig()` with sensible defaults (see godoc).
 
 ### connectrpc/jwtauth
 
