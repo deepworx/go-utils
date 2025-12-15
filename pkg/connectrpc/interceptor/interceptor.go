@@ -84,7 +84,7 @@ func buildChain(o *Options, auth *jwtauth.Authenticator) ([]connect.Interceptor,
 	interceptors = append(interceptors, requestid.NewInterceptor(requestIDCfg))
 
 	// 4. OTel - captures full span including auth/validation time
-	otelInterceptor, err := otelconnect.NewInterceptor()
+	otelInterceptor, err := otelconnect.NewInterceptor(otelconnect.WithoutServerPeerAttributes())
 	if err != nil {
 		return nil, fmt.Errorf("create otel interceptor: %w", err)
 	}
