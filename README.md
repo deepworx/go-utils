@@ -28,6 +28,7 @@ go get github.com/deepworx/go-utils
 | requestid | `pkg/connectrpc/requestid` | Request ID propagation interceptor |
 | errors | `pkg/connectrpc/errors` | Error mapping interceptor |
 | deadline | `pkg/connectrpc/deadline` | Deadline enforcement interceptor |
+| interceptor | `pkg/connectrpc/interceptor` | Default interceptor chain builder |
 | otelconnect | `connectrpc.com/otelconnect` | OpenTelemetry tracing/metrics (external) |
 | validate | `connectrpc.com/validate` | Request validation with protovalidate (external) |
 
@@ -254,6 +255,18 @@ mux.Handle(servicepb.NewServiceHandler(
         MaxTimeout:     60 * time.Second, // caps existing deadlines (0 = no cap)
     })),
 ))
+```
+
+### connectrpc/interceptor
+
+Default interceptor chain builder. Order: recovery → deadline → requestid → otel → logging → [jwtauth] → validate → errors.
+
+```go
+interceptors, _ := interceptor.BuildDefault()                      // 7 interceptors
+interceptors, _ := interceptor.BuildDefaultWithAuth(auth)          // 8 interceptors (with JWT)
+interceptors, _ := interceptor.BuildDefault(                       // with options
+    interceptor.WithDeadline(deadline.Config{DefaultTimeout: 60 * time.Second}),
+)
 ```
 
 ### connectrpc/tracing (via otelconnect)
