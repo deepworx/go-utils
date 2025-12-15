@@ -123,11 +123,17 @@ func NewAuthenticator(ctx context.Context, cfg Config) (*Authenticator, error) {
 		return nil, fmt.Errorf("create jwk cache: %w", err)
 	}
 
-	if err := cache.Register(ctx, cfg.JWKSURL); err != nil {
+	// Use timeout context for initial JWKS registration and fetch
+	// The HTTP client timeout only applies to HTTP requests, but Register/Lookup
+	// also wait for internal state changes which need their own timeout
+	initCtx, initCancel := context.WithTimeout(ctx, httpTimeout)
+	defer initCancel()
+
+	if err := cache.Register(initCtx, cfg.JWKSURL); err != nil {
 		return nil, fmt.Errorf("register jwks url %s: %w", cfg.JWKSURL, err)
 	}
 
-	if _, err := cache.Lookup(ctx, cfg.JWKSURL); err != nil {
+	if _, err := cache.Lookup(initCtx, cfg.JWKSURL); err != nil {
 		return nil, fmt.Errorf("initial jwks fetch from %s: %w", cfg.JWKSURL, ErrJWKSFetch)
 	}
 
