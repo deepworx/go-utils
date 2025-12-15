@@ -18,7 +18,8 @@ go get github.com/deepworx/go-utils
 | shutdown | `pkg/shutdown` | Graceful shutdown orchestration |
 | otel | `pkg/otel` | OpenTelemetry initialization |
 | tracing | `pkg/tracing` | Manual span creation helpers |
-| postgres | `pkg/postgres` | Database utilities with tracing |
+| postgres | `pkg/postgres` | Database pool with tracing and health check |
+| grpchealth | `pkg/grpchealth` | gRPC health check aggregator |
 | slogutil | `pkg/slogutil` | Global slog logger setup |
 | koanfutil | `pkg/koanfutil` | Koanf configuration helpers |
 | jwtauth | `pkg/connectrpc/jwtauth` | JWT authentication interceptor |
@@ -87,6 +88,30 @@ err := tracing.WithSpan(ctx, "operation", func(ctx context.Context) error {
 result, err := tracing.WithSpanResult(ctx, "fetch", func(ctx context.Context) (User, error) {
     return fetchUser(ctx)
 })
+```
+
+### postgres
+
+Database pool with OpenTelemetry tracing and health checking.
+
+```go
+pool, _ := postgres.NewPool(ctx, postgres.Config{DSN: "postgres://localhost/db"})
+
+// Health check for grpchealth aggregator
+checker := postgres.NewHealthChecker(pool)
+```
+
+### grpchealth
+
+Health check aggregator for [connectrpc.com/grpchealth](https://pkg.go.dev/connectrpc.com/grpchealth). Probes checkers in parallel, sets `StatusServing` only if all pass.
+
+```go
+aggregator := grpchealth.NewAggregator(grpchealth.DefaultConfig()).
+    Register("postgres", postgres.NewHealthChecker(pool)).
+    Register("redis", redisChecker)
+
+mux.Handle(aggregator.Handler())
+go aggregator.Run(ctx)
 ```
 
 ### slogutil

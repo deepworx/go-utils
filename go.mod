@@ -4,6 +4,7 @@ go 1.25.5
 
 require (
 	connectrpc.com/connect v1.19.1
+	connectrpc.com/grpchealth v1.4.0
 	github.com/exaring/otelpgx v0.9.4
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.7.6
