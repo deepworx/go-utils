@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1](https://github.com/deepworx/go-utils/compare/v0.3.0...v0.3.1) (2025-12-15)
+
+
+### Bug Fixes
+
+* **jwtauth:** add context timeout to prevent hang on unreachable JWKS URL ([629fae4](https://github.com/deepworx/go-utils/commit/629fae45ea8e5183c6125919ec1b9e7f0d75d3c4))
+
 ## [0.3.0](https://github.com/deepworx/go-utils/compare/v0.2.1...v0.3.0) (2025-12-15)
 
 
