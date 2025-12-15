@@ -5,7 +5,17 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/deepworx/go-utils/pkg/shutdown"
 )
+
+// cleanupShutdown clears the global shutdown handlers after each test.
+func cleanupShutdown(t *testing.T) {
+	t.Helper()
+	t.Cleanup(func() {
+		_ = shutdown.Shutdown(context.Background())
+	})
+}
 
 func TestDefaultConfig(t *testing.T) {
 	t.Parallel()
@@ -21,10 +31,13 @@ func TestDefaultConfig(t *testing.T) {
 }
 
 func TestNewAggregator(t *testing.T) {
-	t.Parallel()
+	cleanupShutdown(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	cfg := DefaultConfig()
-	agg := NewAggregator(cfg)
+	agg := NewAggregator(ctx, cfg)
 
 	if agg == nil {
 		t.Fatal("NewAggregator returned nil")
@@ -34,13 +47,45 @@ func TestNewAggregator(t *testing.T) {
 	}
 }
 
+func TestNewAggregator_StartsBackgroundLoop(t *testing.T) {
+	cleanupShutdown(t)
+
+	cfg := Config{
+		Interval: 50 * time.Millisecond,
+		Timeout:  25 * time.Millisecond,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var checkCount atomic.Int32
+	checker := HealthCheckerFunc(func(ctx context.Context) bool {
+		checkCount.Add(1)
+		return true
+	})
+
+	agg := NewAggregator(ctx, cfg)
+	agg.Register("test", checker)
+
+	// Wait for background loop to run a few cycles
+	time.Sleep(150 * time.Millisecond)
+
+	if checkCount.Load() < 2 {
+		t.Errorf("expected at least 2 health checks, got %d", checkCount.Load())
+	}
+	if !agg.IsServing() {
+		t.Error("aggregator should be serving after successful checks")
+	}
+}
+
 func TestRegister(t *testing.T) {
-	t.Parallel()
-
 	t.Run("successful registration", func(t *testing.T) {
-		t.Parallel()
+		cleanupShutdown(t)
 
-		agg := NewAggregator(DefaultConfig())
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		agg := NewAggregator(ctx, DefaultConfig())
 		checker := HealthCheckerFunc(func(ctx context.Context) bool { return true })
 
 		result := agg.Register("test", checker)
@@ -50,9 +95,12 @@ func TestRegister(t *testing.T) {
 	})
 
 	t.Run("chained registration", func(t *testing.T) {
-		t.Parallel()
+		cleanupShutdown(t)
 
-		agg := NewAggregator(DefaultConfig())
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		agg := NewAggregator(ctx, DefaultConfig())
 		checker := HealthCheckerFunc(func(ctx context.Context) bool { return true })
 
 		result := agg.
@@ -66,7 +114,7 @@ func TestRegister(t *testing.T) {
 	})
 
 	t.Run("empty name panics", func(t *testing.T) {
-		t.Parallel()
+		cleanupShutdown(t)
 
 		defer func() {
 			if r := recover(); r == nil {
@@ -74,13 +122,16 @@ func TestRegister(t *testing.T) {
 			}
 		}()
 
-		agg := NewAggregator(DefaultConfig())
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		agg := NewAggregator(ctx, DefaultConfig())
 		checker := HealthCheckerFunc(func(ctx context.Context) bool { return true })
 		agg.Register("", checker)
 	})
 
 	t.Run("duplicate name panics", func(t *testing.T) {
-		t.Parallel()
+		cleanupShutdown(t)
 
 		defer func() {
 			if r := recover(); r == nil {
@@ -88,7 +139,10 @@ func TestRegister(t *testing.T) {
 			}
 		}()
 
-		agg := NewAggregator(DefaultConfig())
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		agg := NewAggregator(ctx, DefaultConfig())
 		checker := HealthCheckerFunc(func(ctx context.Context) bool { return true })
 		agg.Register("test", checker)
 		agg.Register("test", checker)
@@ -128,8 +182,6 @@ func TestHealthCheckerFunc(t *testing.T) {
 }
 
 func TestRunChecks(t *testing.T) {
-	t.Parallel()
-
 	tests := []struct {
 		name            string
 		checkers        map[string]bool
@@ -169,13 +221,17 @@ func TestRunChecks(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+			cleanupShutdown(t)
 
 			cfg := Config{
 				Interval: 100 * time.Millisecond,
 				Timeout:  50 * time.Millisecond,
 			}
-			agg := NewAggregator(cfg)
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			agg := NewAggregator(ctx, cfg)
 
 			for name, healthy := range tt.checkers {
 				h := healthy // capture
@@ -184,11 +240,11 @@ func TestRunChecks(t *testing.T) {
 				}))
 			}
 
-			ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-			defer cancel()
+			checkCtx, checkCancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+			defer checkCancel()
 
 			// Run checks once
-			agg.runChecks(ctx)
+			agg.runChecks(checkCtx)
 
 			if agg.IsServing() != tt.expectedServing {
 				t.Errorf("IsServing() = %v, want %v", agg.IsServing(), tt.expectedServing)
@@ -198,13 +254,17 @@ func TestRunChecks(t *testing.T) {
 }
 
 func TestRunChecksTimeout(t *testing.T) {
-	t.Parallel()
+	cleanupShutdown(t)
 
 	cfg := Config{
 		Interval: 100 * time.Millisecond,
 		Timeout:  50 * time.Millisecond,
 	}
-	agg := NewAggregator(cfg)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	agg := NewAggregator(ctx, cfg)
 
 	// Register a checker that blocks longer than timeout
 	agg.Register("slow", HealthCheckerFunc(func(ctx context.Context) bool {
@@ -216,8 +276,7 @@ func TestRunChecksTimeout(t *testing.T) {
 		}
 	}))
 
-	ctx := context.Background()
-	agg.runChecks(ctx)
+	agg.runChecks(context.Background())
 
 	if agg.IsServing() {
 		t.Error("slow checker should result in not serving")
@@ -225,71 +284,111 @@ func TestRunChecksTimeout(t *testing.T) {
 }
 
 func TestRunChecksPanic(t *testing.T) {
-	t.Parallel()
+	cleanupShutdown(t)
 
 	cfg := Config{
 		Interval: 100 * time.Millisecond,
 		Timeout:  50 * time.Millisecond,
 	}
-	agg := NewAggregator(cfg)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	agg := NewAggregator(ctx, cfg)
 
 	agg.Register("panicky", HealthCheckerFunc(func(ctx context.Context) bool {
 		panic("test panic")
 	}))
 
-	ctx := context.Background()
-
 	// Should not panic
-	agg.runChecks(ctx)
+	agg.runChecks(context.Background())
 
 	if agg.IsServing() {
 		t.Error("panicking checker should result in not serving")
 	}
 }
 
-func TestRunContextCancellation(t *testing.T) {
-	t.Parallel()
+func TestContextCancellationStopsAggregator(t *testing.T) {
+	cleanupShutdown(t)
 
 	cfg := Config{
 		Interval: 50 * time.Millisecond,
 		Timeout:  25 * time.Millisecond,
 	}
-	agg := NewAggregator(cfg)
-
-	agg.Register("test", HealthCheckerFunc(func(ctx context.Context) bool {
-		return true
-	}))
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	done := make(chan error, 1)
-	go func() {
-		done <- agg.Run(ctx)
-	}()
+	var checkCount atomic.Int32
+	checker := HealthCheckerFunc(func(ctx context.Context) bool {
+		checkCount.Add(1)
+		return true
+	})
+
+	agg := NewAggregator(ctx, cfg)
+	agg.Register("test", checker)
 
 	// Let it run a few cycles
 	time.Sleep(150 * time.Millisecond)
+	countBeforeCancel := checkCount.Load()
 
 	cancel()
 
-	select {
-	case err := <-done:
-		if err != context.Canceled {
-			t.Errorf("Run() error = %v, want %v", err, context.Canceled)
-		}
-	case <-time.After(time.Second):
-		t.Error("Run() did not return after context cancellation")
+	// Wait a bit and verify no more checks happen
+	time.Sleep(150 * time.Millisecond)
+	countAfterCancel := checkCount.Load()
+
+	if countAfterCancel > countBeforeCancel+1 {
+		t.Errorf("expected checks to stop after cancel, before=%d after=%d", countBeforeCancel, countAfterCancel)
+	}
+}
+
+func TestShutdownStopsAggregator(t *testing.T) {
+	// Note: not using cleanupShutdown here as we test shutdown explicitly
+
+	cfg := Config{
+		Interval: 50 * time.Millisecond,
+		Timeout:  25 * time.Millisecond,
+	}
+
+	ctx := context.Background()
+
+	var checkCount atomic.Int32
+	checker := HealthCheckerFunc(func(ctx context.Context) bool {
+		checkCount.Add(1)
+		return true
+	})
+
+	agg := NewAggregator(ctx, cfg)
+	agg.Register("test", checker)
+
+	// Let it run a few cycles
+	time.Sleep(150 * time.Millisecond)
+	countBeforeShutdown := checkCount.Load()
+
+	// Trigger shutdown
+	_ = shutdown.Shutdown(context.Background())
+
+	// Wait a bit and verify no more checks happen
+	time.Sleep(150 * time.Millisecond)
+	countAfterShutdown := checkCount.Load()
+
+	if countAfterShutdown > countBeforeShutdown+1 {
+		t.Errorf("expected checks to stop after shutdown, before=%d after=%d", countBeforeShutdown, countAfterShutdown)
 	}
 }
 
 func TestRunParallelExecution(t *testing.T) {
-	t.Parallel()
+	cleanupShutdown(t)
 
 	cfg := Config{
 		Interval: 100 * time.Millisecond,
 		Timeout:  500 * time.Millisecond,
 	}
-	agg := NewAggregator(cfg)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	agg := NewAggregator(ctx, cfg)
 
 	var concurrent atomic.Int32
 	var maxConcurrent atomic.Int32
@@ -312,8 +411,7 @@ func TestRunParallelExecution(t *testing.T) {
 		}))
 	}
 
-	ctx := context.Background()
-	agg.runChecks(ctx)
+	agg.runChecks(context.Background())
 
 	if maxConcurrent.Load() < 2 {
 		t.Errorf("expected parallel execution, max concurrent = %d", maxConcurrent.Load())
@@ -321,9 +419,12 @@ func TestRunParallelExecution(t *testing.T) {
 }
 
 func TestHandler(t *testing.T) {
-	t.Parallel()
+	cleanupShutdown(t)
 
-	agg := NewAggregator(DefaultConfig())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	agg := NewAggregator(ctx, DefaultConfig())
 
 	path, handler := agg.Handler()
 

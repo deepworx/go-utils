@@ -103,15 +103,15 @@ checker := postgres.NewHealthChecker(pool)
 
 ### grpchealth
 
-Health check aggregator for [connectrpc.com/grpchealth](https://pkg.go.dev/connectrpc.com/grpchealth). Probes checkers in parallel, sets `StatusServing` only if all pass.
+Health check aggregator for [connectrpc.com/grpchealth](https://pkg.go.dev/connectrpc.com/grpchealth). Probes checkers in parallel, sets `StatusServing` only if all pass. Automatically registers with `shutdown` for graceful termination.
 
 ```go
-aggregator := grpchealth.NewAggregator(grpchealth.DefaultConfig()).
+aggregator := grpchealth.NewAggregator(ctx, grpchealth.DefaultConfig()).
     Register("postgres", postgres.NewHealthChecker(pool)).
     Register("redis", redisChecker)
 
 mux.Handle(aggregator.Handler())
-go aggregator.Run(ctx)
+// Background goroutine runs automatically, stopped by shutdown.WaitForSignal()
 ```
 
 ### slogutil

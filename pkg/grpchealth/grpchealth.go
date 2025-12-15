@@ -14,6 +14,8 @@ import (
 
 	"connectrpc.com/connect"
 	"connectrpc.com/grpchealth"
+
+	"github.com/deepworx/go-utils/pkg/shutdown"
 )
 
 // HealthChecker checks the readiness of a service.
@@ -56,20 +58,32 @@ type Aggregator struct {
 	mu       sync.RWMutex
 	services map[string]HealthChecker
 	serving  bool
+
+	cancel context.CancelFunc
 }
 
-// NewAggregator creates a new health aggregator.
+// NewAggregator creates and starts a new health aggregator.
 // The aggregator starts in NotServing state until the first check cycle completes.
-func NewAggregator(cfg Config) *Aggregator {
+// The context controls the lifecycle of the background health check goroutine.
+// A shutdown handler is automatically registered with the shutdown package.
+func NewAggregator(ctx context.Context, cfg Config) *Aggregator {
 	checker := grpchealth.NewStaticChecker()
 	checker.SetStatus("", grpchealth.StatusNotServing)
 
-	return &Aggregator{
+	ctx, cancel := context.WithCancel(ctx)
+
+	a := &Aggregator{
 		cfg:      cfg,
 		checker:  checker,
 		services: make(map[string]HealthChecker),
 		serving:  false,
+		cancel:   cancel,
 	}
+
+	shutdown.Register(a.stop)
+	go a.run(ctx)
+
+	return a
 }
 
 // Register adds a health checker with the given name.
@@ -97,23 +111,29 @@ func (a *Aggregator) Handler(opts ...connect.HandlerOption) (string, http.Handle
 	return grpchealth.NewHandler(a.checker, opts...)
 }
 
-// Run starts the health check loop and blocks until ctx is cancelled.
-// It probes all registered checkers in parallel and updates the aggregate status.
-func (a *Aggregator) Run(ctx context.Context) error {
+// run executes the health check loop (internal, blocking).
+func (a *Aggregator) run(ctx context.Context) {
 	ticker := time.NewTicker(a.cfg.Interval)
 	defer ticker.Stop()
 
-	// Run first check immediately
 	a.runChecks(ctx)
 
 	for {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return
 		case <-ticker.C:
 			a.runChecks(ctx)
 		}
 	}
+}
+
+// stop cancels the background goroutine.
+func (a *Aggregator) stop(_ context.Context) error {
+	if a.cancel != nil {
+		a.cancel()
+	}
+	return nil
 }
 
 // IsServing returns the current aggregate health status (thread-safe).
