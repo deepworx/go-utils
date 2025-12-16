@@ -486,6 +486,72 @@ func TestInterceptor_Authenticate(t *testing.T) {
 	}
 }
 
+func TestAuthenticator_InferAlgorithmFromKey(t *testing.T) {
+	t.Parallel()
+
+	privKey, pubKey := generateTestKeysWithoutAlg(t)
+	srv := setupTestJWKSServer(t, pubKey)
+	t.Cleanup(srv.Close)
+
+	ctx := context.Background()
+
+	t.Run("fails without InferAlgorithmFromKey", func(t *testing.T) {
+		t.Parallel()
+
+		auth, err := NewAuthenticator(ctx, Config{
+			JWKSURL:               srv.URL,
+			Issuer:                "test-issuer",
+			Audience:              "test-audience",
+			InferAlgorithmFromKey: false,
+		})
+		if err != nil {
+			t.Fatalf("NewAuthenticator() error = %v", err)
+		}
+
+		token := signTestTokenWithKeyID(t, privKey, "test-key-id-no-alg", map[string]any{
+			"iss": "test-issuer",
+			"aud": []string{"test-audience"},
+			"sub": "user-123",
+			"exp": time.Now().Add(time.Hour).Unix(),
+		})
+
+		_, err = auth.Authenticate(ctx, token)
+		if err == nil {
+			t.Fatal("expected error when key has no alg and InferAlgorithmFromKey is false")
+		}
+	})
+
+	t.Run("succeeds with InferAlgorithmFromKey", func(t *testing.T) {
+		t.Parallel()
+
+		auth, err := NewAuthenticator(ctx, Config{
+			JWKSURL:               srv.URL,
+			Issuer:                "test-issuer",
+			Audience:              "test-audience",
+			InferAlgorithmFromKey: true,
+		})
+		if err != nil {
+			t.Fatalf("NewAuthenticator() error = %v", err)
+		}
+
+		token := signTestTokenWithKeyID(t, privKey, "test-key-id-no-alg", map[string]any{
+			"iss": "test-issuer",
+			"aud": []string{"test-audience"},
+			"sub": "user-123",
+			"exp": time.Now().Add(time.Hour).Unix(),
+		})
+
+		claims, err := auth.Authenticate(ctx, token)
+		if err != nil {
+			t.Fatalf("Authenticate() error = %v", err)
+		}
+
+		if claims.UserID != "user-123" {
+			t.Errorf("UserID = %q, want %q", claims.UserID, "user-123")
+		}
+	})
+}
+
 func TestMapToConnectError(t *testing.T) {
 	t.Parallel()
 
@@ -568,6 +634,26 @@ func generateTestKeys(t *testing.T) (*rsa.PrivateKey, jwk.Key) {
 	return privKey, pubJWK
 }
 
+func generateTestKeysWithoutAlg(t *testing.T) (*rsa.PrivateKey, jwk.Key) {
+	t.Helper()
+
+	privKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("failed to generate RSA key: %v", err)
+	}
+
+	pubJWK, err := jwk.Import(&privKey.PublicKey)
+	if err != nil {
+		t.Fatalf("failed to create JWK: %v", err)
+	}
+	if err := pubJWK.Set(jwk.KeyIDKey, "test-key-id-no-alg"); err != nil {
+		t.Fatalf("failed to set key ID: %v", err)
+	}
+	// Intentionally NOT setting algorithm to test InferAlgorithmFromKey
+
+	return privKey, pubJWK
+}
+
 func setupTestJWKSServer(t *testing.T, pubKey jwk.Key) *httptest.Server {
 	t.Helper()
 
@@ -586,6 +672,11 @@ func setupTestJWKSServer(t *testing.T, pubKey jwk.Key) *httptest.Server {
 
 func signTestToken(t *testing.T, privKey *rsa.PrivateKey, claims map[string]any) string {
 	t.Helper()
+	return signTestTokenWithKeyID(t, privKey, "test-key-id", claims)
+}
+
+func signTestTokenWithKeyID(t *testing.T, privKey *rsa.PrivateKey, keyID string, claims map[string]any) string {
+	t.Helper()
 
 	tok := jwt.New()
 	for k, v := range claims {
@@ -598,7 +689,7 @@ func signTestToken(t *testing.T, privKey *rsa.PrivateKey, claims map[string]any)
 	if err != nil {
 		t.Fatalf("failed to import private key: %v", err)
 	}
-	if err := privJWK.Set(jwk.KeyIDKey, "test-key-id"); err != nil {
+	if err := privJWK.Set(jwk.KeyIDKey, keyID); err != nil {
 		t.Fatalf("failed to set key ID: %v", err)
 	}
 

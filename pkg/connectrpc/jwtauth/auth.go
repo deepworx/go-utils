@@ -11,6 +11,7 @@ import (
 	"connectrpc.com/connect"
 	"github.com/lestrrat-go/httprc/v3"
 	"github.com/lestrrat-go/jwx/v3/jwk"
+	"github.com/lestrrat-go/jwx/v3/jws"
 	"github.com/lestrrat-go/jwx/v3/jwt"
 
 	"github.com/deepworx/go-utils/pkg/ctxutil"
@@ -56,6 +57,11 @@ type Config struct {
 
 	// Leeway allows clock skew tolerance for exp/nbf/iat validation.
 	Leeway time.Duration `koanf:"leeway"`
+
+	// InferAlgorithmFromKey enables algorithm inference from key type when
+	// the JWKS keys don't have an explicit "alg" field set.
+	// Default: false (requires explicit algorithm in JWKS)
+	InferAlgorithmFromKey bool `koanf:"infer_algorithm_from_key"`
 }
 
 // DefaultConfig returns a Config with sensible default values.
@@ -87,12 +93,13 @@ func (c Config) Validate() error {
 
 // Authenticator validates JWT tokens and extracts claims.
 type Authenticator struct {
-	cache    *jwk.Cache
-	jwksURL  string
-	issuer   string
-	audience string
-	mapping  ClaimsMapping
-	leeway   time.Duration
+	cache                 *jwk.Cache
+	jwksURL               string
+	issuer                string
+	audience              string
+	mapping               ClaimsMapping
+	leeway                time.Duration
+	inferAlgorithmFromKey bool
 }
 
 // NewAuthenticator creates a new JWT authenticator with the given configuration.
@@ -147,12 +154,13 @@ func NewAuthenticator(ctx context.Context, cfg Config) (*Authenticator, error) {
 	}
 
 	return &Authenticator{
-		cache:    cache,
-		jwksURL:  cfg.JWKSURL,
-		issuer:   cfg.Issuer,
-		audience: cfg.Audience,
-		mapping:  mapping,
-		leeway:   leeway,
+		cache:                 cache,
+		jwksURL:               cfg.JWKSURL,
+		issuer:                cfg.Issuer,
+		audience:              cfg.Audience,
+		mapping:               mapping,
+		leeway:                leeway,
+		inferAlgorithmFromKey: cfg.InferAlgorithmFromKey,
 	}, nil
 }
 
@@ -167,9 +175,15 @@ func (a *Authenticator) Authenticate(ctx context.Context, token string) (ctxutil
 	}
 
 	tok, err := tracing.WithSpanResult(ctx, "jwtauth.parse_token", func(ctx context.Context) (jwt.Token, error) {
+		var keySetOpt jwt.ParseOption
+		if a.inferAlgorithmFromKey {
+			keySetOpt = jwt.WithKeySet(keyset, jws.WithInferAlgorithmFromKey(true))
+		} else {
+			keySetOpt = jwt.WithKeySet(keyset)
+		}
 		return jwt.Parse(
 			[]byte(token),
-			jwt.WithKeySet(keyset),
+			keySetOpt,
 			jwt.WithValidate(true),
 			jwt.WithIssuer(a.issuer),
 			jwt.WithAudience(a.audience),
