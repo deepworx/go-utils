@@ -19,6 +19,47 @@ import (
 	"github.com/deepworx/go-utils/pkg/ctxutil"
 )
 
+func TestConfig_Validate(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		cfg     Config
+		wantErr error
+	}{
+		{
+			name:    "valid config",
+			cfg:     Config{JWKSURL: "https://example.com/jwks", Issuer: "iss", Audience: "aud"},
+			wantErr: nil,
+		},
+		{
+			name:    "missing JWKSURL",
+			cfg:     Config{Issuer: "iss", Audience: "aud"},
+			wantErr: ErrJWKSURLRequired,
+		},
+		{
+			name:    "missing Issuer",
+			cfg:     Config{JWKSURL: "https://example.com/jwks", Audience: "aud"},
+			wantErr: ErrIssuerRequired,
+		},
+		{
+			name:    "missing Audience",
+			cfg:     Config{JWKSURL: "https://example.com/jwks", Issuer: "iss"},
+			wantErr: ErrAudienceRequired,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := tt.cfg.Validate()
+			if !errors.Is(err, tt.wantErr) {
+				t.Errorf("Validate() error = %v, want %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestGetNestedClaim(t *testing.T) {
 	t.Parallel()
 
@@ -166,22 +207,22 @@ func TestNewAuthenticator_Validation(t *testing.T) {
 	tests := []struct {
 		name    string
 		cfg     Config
-		wantErr string
+		wantErr error
 	}{
 		{
 			name:    "missing JWKSURL",
 			cfg:     Config{Issuer: "iss", Audience: "aud"},
-			wantErr: "JWKSURL is required",
+			wantErr: ErrJWKSURLRequired,
 		},
 		{
 			name:    "missing Issuer",
 			cfg:     Config{JWKSURL: "https://example.com/jwks", Audience: "aud"},
-			wantErr: "Issuer is required",
+			wantErr: ErrIssuerRequired,
 		},
 		{
 			name:    "missing Audience",
 			cfg:     Config{JWKSURL: "https://example.com/jwks", Issuer: "iss"},
-			wantErr: "Audience is required",
+			wantErr: ErrAudienceRequired,
 		},
 	}
 
@@ -192,8 +233,8 @@ func TestNewAuthenticator_Validation(t *testing.T) {
 			if err == nil {
 				t.Fatal("expected error, got nil")
 			}
-			if !containsString(err.Error(), tt.wantErr) {
-				t.Errorf("error = %q, want to contain %q", err.Error(), tt.wantErr)
+			if !errors.Is(err, tt.wantErr) {
+				t.Errorf("error = %v, want %v", err, tt.wantErr)
 			}
 		})
 	}

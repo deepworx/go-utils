@@ -70,6 +70,21 @@ func DefaultConfig() Config {
 	}
 }
 
+// Validate checks that all required fields are set.
+// Returns nil if configuration is valid.
+func (c Config) Validate() error {
+	if c.JWKSURL == "" {
+		return ErrJWKSURLRequired
+	}
+	if c.Issuer == "" {
+		return ErrIssuerRequired
+	}
+	if c.Audience == "" {
+		return ErrAudienceRequired
+	}
+	return nil
+}
+
 // Authenticator validates JWT tokens and extracts claims.
 type Authenticator struct {
 	cache    *jwk.Cache
@@ -84,14 +99,8 @@ type Authenticator struct {
 // The ctx controls the lifecycle of the background JWKS refresh goroutine.
 // Returns error if required config fields are empty or if initial JWKS fetch fails.
 func NewAuthenticator(ctx context.Context, cfg Config) (*Authenticator, error) {
-	if cfg.JWKSURL == "" {
-		return nil, fmt.Errorf("create authenticator: JWKSURL is required")
-	}
-	if cfg.Issuer == "" {
-		return nil, fmt.Errorf("create authenticator: Issuer is required")
-	}
-	if cfg.Audience == "" {
-		return nil, fmt.Errorf("create authenticator: Audience is required")
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("create authenticator: %w", err)
 	}
 
 	httpTimeout := cfg.HTTPTimeout

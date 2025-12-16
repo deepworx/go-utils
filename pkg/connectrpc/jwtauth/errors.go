@@ -28,4 +28,13 @@ var (
 
 	// ErrJWKSFetch is returned when JWKS cannot be fetched.
 	ErrJWKSFetch = errors.New("failed to fetch JWKS")
+
+	// ErrJWKSURLRequired is returned when JWKSURL is empty.
+	ErrJWKSURLRequired = errors.New("jwks_url is required")
+
+	// ErrIssuerRequired is returned when Issuer is empty.
+	ErrIssuerRequired = errors.New("issuer is required")
+
+	// ErrAudienceRequired is returned when Audience is empty.
+	ErrAudienceRequired = errors.New("audience is required")
 )
