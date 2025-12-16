@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/deepworx/go-utils/compare/v0.4.0...v0.4.1) (2025-12-16)
+
+
+### Bug Fixes
+
+* **jwtauth:** add InferAlgorithmFromKey config option for JWKS without alg field ([8a6cada](https://github.com/deepworx/go-utils/commit/8a6cadafd8f95b2de7652c88d86f413c2b8c4576))
+
 ## [0.4.0](https://github.com/deepworx/go-utils/compare/v0.3.2...v0.4.0) (2025-12-16)
 
 
