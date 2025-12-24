@@ -18,7 +18,7 @@ go get github.com/deepworx/go-utils
 | shutdown | `pkg/shutdown` | Graceful shutdown orchestration |
 | otel | `pkg/otel` | OpenTelemetry initialization |
 | tracing | `pkg/tracing` | Manual span creation helpers |
-| postgres | `pkg/postgres` | Database pool with tracing and health check |
+| postgres | `pkg/postgres` | Database pool, transactions, and UnitOfWork |
 | grpchealth | `pkg/grpchealth` | gRPC health check aggregator |
 | slogutil | `pkg/slogutil` | Global slog logger setup |
 | koanfutil | `pkg/koanfutil` | Koanf configuration helpers |
@@ -100,6 +100,15 @@ pool, _ := postgres.NewPool(ctx, postgres.Config{DSN: "postgres://localhost/db"}
 
 // Health check for grpchealth aggregator
 checker := postgres.NewHealthChecker(pool)
+
+// UnitOfWork for testable transaction management
+uow := postgres.NewUnitOfWork(pool)
+uow.Execute(ctx, func(ctx context.Context, tx postgres.Transaction) error {
+    return repo.Save(ctx, tx.Tx(), data)
+})
+
+// For testing: InMemoryUnitOfWork (tx.Tx() returns nil)
+memUoW := postgres.NewInMemoryUnitOfWork()
 ```
 
 ### grpchealth
