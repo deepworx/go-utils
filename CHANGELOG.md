@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.5.0](https://github.com/deepworx/go-utils/compare/v0.4.1...v0.5.0) (2025-12-24)
+
+
+### Features
+
+* **postgres:** add UnitOfWork pattern for testable transaction management ([1dab67f](https://github.com/deepworx/go-utils/commit/1dab67f7c26dc521c9c85d0aebb8b1fda0631012))
+
+
+### Bug Fixes
+
+* **jwtauth:** remove unused test helper functions ([3e9e604](https://github.com/deepworx/go-utils/commit/3e9e6043ee63bc73863b7aa8a9be9ca3ab0847e8))
+
 ## [0.4.1](https://github.com/deepworx/go-utils/compare/v0.4.0...v0.4.1) (2025-12-16)
 
 
