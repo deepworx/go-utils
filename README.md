@@ -19,6 +19,7 @@ go get github.com/deepworx/go-utils
 | otel | `pkg/otel` | OpenTelemetry initialization |
 | tracing | `pkg/tracing` | Manual span creation helpers |
 | postgres | `pkg/postgres` | Database pool, transactions, and UnitOfWork |
+| nats | `pkg/nats` | NATS/JetStream connection with tracing and metrics |
 | grpchealth | `pkg/grpchealth` | gRPC health check aggregator |
 | slogutil | `pkg/slogutil` | Global slog logger setup |
 | koanfutil | `pkg/koanfutil` | Koanf configuration helpers |
@@ -109,6 +110,46 @@ uow.Execute(ctx, func(ctx context.Context, tx postgres.Transaction) error {
 
 // For testing: InMemoryUnitOfWork (tx.Tx() returns nil)
 memUoW := postgres.NewInMemoryUnitOfWork()
+```
+
+### nats
+
+NATS and JetStream connection with TLS/mTLS support, health checks, tracing, and metrics.
+
+```go
+conn, _ := nats.Connect(ctx, nats.Config{URL: "nats://localhost:4222"})
+
+// Health check for grpchealth aggregator
+checker := nats.NewHealthChecker(conn)
+```
+
+Publish with trace context:
+
+```go
+nats.Publish(ctx, conn, nats.PublishInput{
+    Subject: "orders.created",
+    Data:    payload,
+})
+
+// JetStream with deduplication
+js, _ := jetstream.New(conn)
+nats.JetStreamPublish(ctx, js, nats.JetStreamPublishInput{
+    Subject: "orders.created",
+    Data:    payload,
+    MsgID:   "order-123", // optional deduplication
+})
+```
+
+Consume with automatic trace extraction:
+
+```go
+nats.ConsumeWithTracing(ctx, nats.ConsumeInput{
+    Consumer: consumer,
+    Handler: func(ctx context.Context, msg jetstream.Msg) error {
+        // ctx contains extracted trace context
+        return processOrder(ctx, msg)
+    },
+})
 ```
 
 ### grpchealth
