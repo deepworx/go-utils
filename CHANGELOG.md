@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/deepworx/go-utils/compare/v0.5.0...v0.6.0) (2026-02-04)
+
+
+### Features
+
+* **nats:** add NATS/JetStream connection utilities ([3070c18](https://github.com/deepworx/go-utils/commit/3070c18479f8f01dfdea7b621c197ce65d0ff366))
+
 ## [0.5.0](https://github.com/deepworx/go-utils/compare/v0.4.1...v0.5.0) (2025-12-24)
 
 
