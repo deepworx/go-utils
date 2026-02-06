@@ -11,6 +11,10 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      checks: write
     steps:
       - uses: actions/checkout@v6
 
@@ -19,9 +23,18 @@ jobs:
           go-version: "1.25"
 
       - name: Run tests with coverage
-        run: go test -race -coverprofile=coverage.txt ./...
+        run: go test -json -race -cover -coverprofile=coverage.txt ./... > test-results.json
+
+      - name: Test report
+        if: always()
+        uses: dorny/test-reporter@v2
+        with:
+          name: Go Test Results
+          path: test-results.json
+          reporter: golang-json
 
       - name: Archive coverage results
+        if: always()
         uses: actions/upload-artifact@v6
         with:
           name: code-coverage
