@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/deepworx/go-utils/compare/v0.6.0...v0.7.0) (2026-02-17)
+
+
+### Features
+
+* **nats:** add push consumer support and rename consume API ([53574f9](https://github.com/deepworx/go-utils/commit/53574f96fd9cc292656013df7ac9f4310c62e7c4))
+
 ## [0.6.0](https://github.com/deepworx/go-utils/compare/v0.5.0...v0.6.0) (2026-02-04)
 
 
