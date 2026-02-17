@@ -27,11 +27,18 @@ type JetStreamPublishInput struct {
 	MsgID   string // optional, for deduplication
 }
 
-// ConsumeInput holds parameters for consumer operations with tracing.
-type ConsumeInput struct {
+// PullConsumeInput holds parameters for pull consumer operations with tracing.
+type PullConsumeInput struct {
 	Consumer jetstream.Consumer
 	Handler  func(ctx context.Context, msg jetstream.Msg) error
 	Options  []jetstream.PullConsumeOpt
+}
+
+// PushConsumeInput holds parameters for push consumer operations with tracing.
+type PushConsumeInput struct {
+	Consumer jetstream.PushConsumer
+	Handler  func(ctx context.Context, msg jetstream.Msg) error
+	Options  []jetstream.PushConsumeOpt
 }
 
 // headerCarrier adapts nats.Header to propagation.TextMapCarrier.
@@ -95,28 +102,40 @@ func JetStreamPublish(ctx context.Context, js jetstream.JetStream, in JetStreamP
 	return ack, nil
 }
 
-// ConsumeWithTracing starts consuming messages with automatic trace extraction.
+// PullConsumeWithTracing starts a pull consumer with automatic trace extraction.
 // Each message handler receives a context with the extracted trace context.
-func ConsumeWithTracing(ctx context.Context, in ConsumeInput) (jetstream.ConsumeContext, error) {
+func PullConsumeWithTracing(ctx context.Context, in PullConsumeInput) (jetstream.ConsumeContext, error) {
+	consCtx, err := in.Consumer.Consume(wrapHandlerWithTracing(ctx, in.Handler), in.Options...)
+	if err != nil {
+		return nil, fmt.Errorf("start pull consumer: %w", err)
+	}
+	return consCtx, nil
+}
+
+// PushConsumeWithTracing starts a push consumer with automatic trace extraction.
+// Each message handler receives a context with the extracted trace context.
+func PushConsumeWithTracing(ctx context.Context, in PushConsumeInput) (jetstream.ConsumeContext, error) {
+	consCtx, err := in.Consumer.Consume(wrapHandlerWithTracing(ctx, in.Handler), in.Options...)
+	if err != nil {
+		return nil, fmt.Errorf("start push consumer: %w", err)
+	}
+	return consCtx, nil
+}
+
+func wrapHandlerWithTracing(ctx context.Context, handler func(context.Context, jetstream.Msg) error) jetstream.MessageHandler {
 	tracer := otel.Tracer(tracerName)
 	propagator := otel.GetTextMapPropagator()
 
-	wrappedHandler := func(msg jetstream.Msg) {
+	return func(msg jetstream.Msg) {
 		msgCtx := propagator.Extract(ctx, headerCarrier(msg.Headers()))
 		msgCtx, span := tracer.Start(msgCtx, "consume "+msg.Subject())
 		defer span.End()
 
-		if err := in.Handler(msgCtx, msg); err != nil {
+		if err := handler(msgCtx, msg); err != nil {
 			span.RecordError(err)
 			span.SetStatus(codes.Error, err.Error())
 		}
 	}
-
-	consCtx, err := in.Consumer.Consume(wrappedHandler, in.Options...)
-	if err != nil {
-		return nil, fmt.Errorf("start consumer: %w", err)
-	}
-	return consCtx, nil
 }
 
 // ExtractTraceContext extracts trace context from a JetStream message.

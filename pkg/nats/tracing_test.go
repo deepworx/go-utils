@@ -68,10 +68,10 @@ func TestJetStreamPublish_NilJetStream(t *testing.T) {
 	})
 }
 
-func TestConsumeInput_Fields(t *testing.T) {
+func TestPullConsumeInput_Fields(t *testing.T) {
 	t.Parallel()
 
-	in := ConsumeInput{
+	in := PullConsumeInput{
 		Handler: func(_ context.Context, _ jetstream.Msg) error {
 			return nil
 		},
@@ -90,10 +90,32 @@ func TestConsumeInput_Fields(t *testing.T) {
 	}
 }
 
-func TestConsumeWithTracing_NilConsumer(t *testing.T) {
+func TestPushConsumeInput_Fields(t *testing.T) {
 	t.Parallel()
 
-	in := ConsumeInput{
+	in := PushConsumeInput{
+		Handler: func(_ context.Context, _ jetstream.Msg) error {
+			return nil
+		},
+	}
+
+	if in.Consumer != nil {
+		t.Error("expected nil consumer")
+	}
+
+	if in.Handler == nil {
+		t.Error("expected non-nil handler")
+	}
+
+	if len(in.Options) != 0 {
+		t.Errorf("expected empty options, got %d", len(in.Options))
+	}
+}
+
+func TestPullConsumeWithTracing_NilConsumer(t *testing.T) {
+	t.Parallel()
+
+	in := PullConsumeInput{
 		Consumer: nil,
 		Handler: func(_ context.Context, _ jetstream.Msg) error {
 			return nil
@@ -106,7 +128,26 @@ func TestConsumeWithTracing_NilConsumer(t *testing.T) {
 		}
 	}()
 
-	_, _ = ConsumeWithTracing(context.Background(), in)
+	_, _ = PullConsumeWithTracing(context.Background(), in)
+}
+
+func TestPushConsumeWithTracing_NilConsumer(t *testing.T) {
+	t.Parallel()
+
+	in := PushConsumeInput{
+		Consumer: nil,
+		Handler: func(_ context.Context, _ jetstream.Msg) error {
+			return nil
+		},
+	}
+
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("expected panic with nil consumer")
+		}
+	}()
+
+	_, _ = PushConsumeWithTracing(context.Background(), in)
 }
 
 func TestExtractTraceContext(t *testing.T) {

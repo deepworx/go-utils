@@ -140,13 +140,22 @@ nats.JetStreamPublish(ctx, js, nats.JetStreamPublishInput{
 })
 ```
 
-Consume with automatic trace extraction:
+Consume with automatic trace extraction (pull and push):
 
 ```go
-nats.ConsumeWithTracing(ctx, nats.ConsumeInput{
+// Pull consumer
+nats.PullConsumeWithTracing(ctx, nats.PullConsumeInput{
     Consumer: consumer,
     Handler: func(ctx context.Context, msg jetstream.Msg) error {
         // ctx contains extracted trace context
+        return processOrder(ctx, msg)
+    },
+})
+
+// Push consumer
+nats.PushConsumeWithTracing(ctx, nats.PushConsumeInput{
+    Consumer: pushConsumer,
+    Handler: func(ctx context.Context, msg jetstream.Msg) error {
         return processOrder(ctx, msg)
     },
 })
