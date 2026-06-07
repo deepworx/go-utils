@@ -11,7 +11,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.7.6
 	github.com/knadh/koanf/v2 v2.3.0
-	github.com/lestrrat-go/httprc/v3 v3.0.2
+	github.com/lestrrat-go/httprc/v3 v3.0.6
 	github.com/lestrrat-go/jwx/v3 v3.0.12
 	github.com/nats-io/nats.go v1.48.0
 	go.opentelemetry.io/contrib/exporters/autoexport v0.64.0
