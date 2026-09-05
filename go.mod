@@ -4,7 +4,7 @@ go 1.25.5
 
 require (
 	connectrpc.com/connect v1.19.1
-	connectrpc.com/grpchealth v1.4.0
+	connectrpc.com/grpchealth v1.5.0
 	connectrpc.com/otelconnect v0.8.0
 	connectrpc.com/validate v0.6.0
 	github.com/exaring/otelpgx v0.9.4
