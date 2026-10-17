@@ -61,6 +61,7 @@ type PgRuntimeConfig struct {
 // through postgres.Conn commit or roll back together with the Cursor.
 type PgRuntime struct {
 	pool     *pgxpool.Pool
+	schema   string
 	codec    *eventstore.Codec
 	uow      *postgres.PgUnitOfWork
 	listener *notify.Listener
@@ -99,6 +100,7 @@ func NewPgRuntime(cfg PgRuntimeConfig) (*PgRuntime, error) {
 	})
 	return &PgRuntime{
 		pool:     cfg.Pool,
+		schema:   schema,
 		codec:    store.Codec(),
 		uow:      postgres.NewUnitOfWork(cfg.Pool),
 		listener: cfg.Listener,
@@ -144,6 +146,7 @@ func (rt *PgRuntime) attach(in attachInput) (port, error) {
 		name:      in.name,
 		types:     types,
 		mode:      in.mode,
+		seed:      in.seedAtHead,
 		wake:      make(chan struct{}, 1),
 		resumedCh: make(chan struct{}, 1),
 	}
@@ -164,6 +167,7 @@ type pgPort struct {
 	name  string
 	types []string
 	mode  Mode
+	seed  bool
 	// held is set while this port holds the lease.
 	held atomic.Bool
 	// wake receives when a NOTIFY (or Gap) arrived on the subscription of
@@ -262,6 +266,21 @@ func (p *pgPort) subscribe(ctx context.Context) (stop func(), err error) {
 // claimFilter creates the Cursor row with the configured filter, or
 // records a changed filter on it. It stops the Consumer instead when the
 // change would leave a gap. A Stopped Cursor is checked again once resumed.
+// createCursor creates the missing Cursor row, at the head of the log when
+// the Consumer seeds at its head.
+func (p *pgPort) createCursor(ctx context.Context, tx pgx.Tx) error {
+	if !p.seed {
+		_, err := tx.Exec(ctx, p.rt.queries.claim, p.name, p.types)
+		return err
+	}
+	head, err := p.head(ctx)
+	if err != nil {
+		return fmt.Errorf("seed cursor: %w", err)
+	}
+	_, err = tx.Exec(ctx, p.rt.queries.seed, p.name, p.types, xid(head), head.Position)
+	return err
+}
+
 func (p *pgPort) claimFilter(ctx context.Context) error {
 	return pgx.BeginFunc(ctx, p.rt.pool, func(tx pgx.Tx) error {
 		var (
@@ -273,8 +292,7 @@ func (p *pgPort) claimFilter(ctx context.Context) error {
 			Scan(&cursor.TransactionID, &cursor.Position, &stored, &stopped)
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
-			_, err = tx.Exec(ctx, p.rt.queries.claim, p.name, p.types)
-			return err
+			return p.createCursor(ctx, tx)
 		case err != nil:
 			return err
 		case stopped || slices.Equal(stored, p.types):
@@ -490,7 +508,7 @@ func xid(c eventstore.Cursor) string {
 // unfiltered ones read the log-order index. Both only see events below
 // pg_snapshot_xmin.
 type pgQueries struct {
-	claim, lockCursor, setFilter, load, advance, stop, resume string
+	claim, seed, lockCursor, setFilter, load, advance, stop, resume string
 
 	// historyFiltered and historyOutside check for events of the given
 	// types, or of any type outside them, at or below a Cursor.
@@ -545,6 +563,8 @@ func newPgQueries(schema string) pgQueries {
 	return pgQueries{
 		claim: `INSERT INTO ` + cursors + ` (name, event_types) VALUES ($1, $2)
 			ON CONFLICT (name) DO NOTHING`,
+		seed: `INSERT INTO ` + cursors + ` (name, event_types, transaction_id, global_position)
+			VALUES ($1, $2, $3::text::xid8, $4) ON CONFLICT (name) DO NOTHING`,
 		lockCursor: `SELECT transaction_id::text::numeric, global_position, event_types, stopped
 			FROM ` + cursors + ` WHERE name = $1 FOR UPDATE`,
 		setFilter: `UPDATE ` + cursors + ` SET event_types = $2 WHERE name = $1`,

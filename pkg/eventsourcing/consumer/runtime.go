@@ -23,6 +23,9 @@ type attachInput struct {
 	eventTypes []string
 	// mode decides which filter changes the Cursor claim accepts.
 	mode Mode
+	// seedAtHead seeds a new Cursor at the head of the log on its first
+	// claim.
+	seedAtHead bool
 }
 
 // port is what a Consumer needs from its Runtime: its Cursor, the filtered

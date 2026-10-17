@@ -301,14 +301,18 @@ func eventAttrs(env eventstore.Envelope) []any {
 func (c *Consumer) handle(ctx context.Context, r record) (err error) {
 	start := time.Now()
 	defer func() { c.inst.processDuration.Record(ctx, time.Since(start).Seconds(), c.inst.labels) }()
+	ctx = ctxutil.WithTenantID(ctx, r.env.TenantID)
+	ctx = ctxutil.WithCorrelationID(ctx, r.env.CorrelationID)
 	event, err := c.port.codec().Decode(r.payload)
 	if err != nil {
-		return Permanent(fmt.Errorf("event %s: %w", r.env.EventID, err))
+		err = Permanent(fmt.Errorf("event %s: %w", r.env.EventID, err))
+		if c.opts.decodeFailed != nil {
+			return c.opts.decodeFailed(ctx, r.env, r.payload, err)
+		}
+		return err
 	}
 	env := r.env
 	env.Event = event
-	ctx = ctxutil.WithTenantID(ctx, env.TenantID)
-	ctx = ctxutil.WithCorrelationID(ctx, env.CorrelationID)
 
 	if c.opts.eventSpans {
 		var span trace.Span

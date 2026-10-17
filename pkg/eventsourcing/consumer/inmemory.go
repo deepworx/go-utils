@@ -98,7 +98,7 @@ func (rt *InMemoryRuntime) attach(in attachInput) (port, error) {
 		return nil, fmt.Errorf("%q: %w", in.name, ErrDuplicate)
 	}
 	c.attached = true
-	return &memPort{rt: rt, types: in.eventTypes, mode: in.mode, cursor: c}, nil
+	return &memPort{rt: rt, types: in.eventTypes, mode: in.mode, seed: in.seedAtHead, cursor: c}, nil
 }
 
 // restart returns a new Runtime over the same Store with a copy of the
@@ -127,6 +127,7 @@ type memPort struct {
 	rt     *InMemoryRuntime
 	types  []string
 	mode   Mode
+	seed   bool
 	cursor *memCursor
 }
 
@@ -163,6 +164,9 @@ func (p *memPort) claimFilter() {
 		p.hasHistory(change, c.cursor) {
 		c.stopped = &Stop{At: time.Now(), Cause: change.cause()}
 		return
+	}
+	if p.seed && !c.claimed {
+		c.cursor = p.rt.feed.Head(p.types)
 	}
 	c.claimed = true
 	c.eventTypes = p.types
