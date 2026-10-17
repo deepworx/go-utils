@@ -10,6 +10,10 @@ type ctxKey int
 const (
 	requestIDKey ctxKey = iota
 	claimsKey
+	tenantIDKey
+	actorKey
+	correlationIDKey
+	causationIDKey
 )
 
 // Claims holds JWT-related identity information.
@@ -49,15 +53,6 @@ func UserID(ctx context.Context) (string, bool) {
 		return "", false
 	}
 	return claims.UserID, true
-}
-
-// TenantID returns the tenant ID from the context claims.
-func TenantID(ctx context.Context) (string, bool) {
-	claims, ok := GetClaims(ctx)
-	if !ok {
-		return "", false
-	}
-	return claims.TenantID, true
 }
 
 // Roles returns the roles from the context claims.
