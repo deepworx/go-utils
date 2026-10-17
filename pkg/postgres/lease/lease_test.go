@@ -87,6 +87,20 @@ func TestTryAcquireExcludesOtherHolders(t *testing.T) {
 	}
 }
 
+// "costarring" and "liquid" share their fnv32a hash, so the two Keys map
+// to the same advisory lock.
+func TestTryAcquireRejectsKeyWithCollidingLock(t *testing.T) {
+	t.Parallel()
+
+	claims := lease.NewClaims(pgtest.New(t), lease.Config{})
+	startClaims(t, claims)
+	mustAcquire(t, claims, lease.Key{Namespace: "ns", Name: "costarring"})
+
+	if _, _, err := claims.TryAcquire(t.Context(), lease.Key{Namespace: "ns", Name: "liquid"}); !errors.Is(err, lease.ErrHeld) {
+		t.Fatalf("TryAcquire() of a colliding Key error = %v, want ErrHeld", err)
+	}
+}
+
 func TestReleaseIsIdempotent(t *testing.T) {
 	t.Parallel()
 
