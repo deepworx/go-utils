@@ -46,9 +46,19 @@ func TestRegisterRejectsInvalidJobs(t *testing.T) {
 			wantErr: scheduler.ErrInvalidJob,
 		},
 		{
-			name:    "interval job",
-			jobs:    []scheduler.Job{{Name: "eod", Every: time.Minute, Run: noop}},
+			name:    "negative Every",
+			jobs:    []scheduler.Job{{Name: "sweep", Every: -time.Minute, Run: noop}},
 			wantErr: scheduler.ErrInvalidJob,
+		},
+		{
+			name:    "NotBefore on an interval job",
+			jobs:    []scheduler.Job{{Name: "sweep", Every: time.Minute, NotBefore: time.Hour, Run: noop}},
+			wantErr: scheduler.ErrInvalidJob,
+		},
+		{
+			name:    "duplicate name across daily and interval jobs",
+			jobs:    []scheduler.Job{{Name: "eod", Run: noop}, {Name: "eod", Every: time.Minute, Run: noop}},
+			wantErr: scheduler.ErrDuplicate,
 		},
 	}
 

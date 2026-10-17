@@ -5,13 +5,21 @@
 // due from local midnight plus NotBefore; missed dates are never run
 // retroactively. Each run claims one scheduler_runs row per (job,
 // business_date), and that claim upsert is the fence against duplicate
-// runs. Leases (a leader lease plus one per job, under the namespace
+// runs.
+//
+// An interval job runs on a fixed grid of multiples of Every on Unix time,
+// so rollouts and restarts never shift it. Its scheduler_intervals row holds
+// the next due_at, claimed with a conditional upsert; after an outage the
+// job runs once and due_at jumps to the next grid point after now.
+//
+// Leases (a leader lease plus one per job, under the namespace
 // "<schema>.scheduler") only prevent duplicate work.
 //
 // Tick(ctx, now) is the synchronous seam that runs everything due at now;
-// Run(ctx) calls it in a loop. Jobs must be idempotent for the same date,
-// since an aborted run (error, timeout or panic) is retried after
-// Config.RetryAfter.
+// Run(ctx) calls it in a loop. Jobs must be idempotent for the same date or
+// grid point, since an aborted run (error, timeout or panic) is retried
+// after Config.RetryAfter, or for interval jobs after min(RetryAfter,
+// Every).
 package scheduler
 
 import (
@@ -48,7 +56,8 @@ var (
 	// registered.
 	ErrDuplicate = errors.New("scheduler: duplicate job")
 	// ErrInvalidJob is returned by Register for a job without a name or Run
-	// func, with a negative duration, or with NotBefore of a day or more.
+	// func, with a negative duration, with NotBefore of a day or more, or
+	// with NotBefore on an interval job.
 	ErrInvalidJob = errors.New("scheduler: invalid job")
 )
 
@@ -59,8 +68,8 @@ type Config struct {
 	// Location is the business timezone that defines a Business date.
 	// Required.
 	Location *time.Location
-	// RetryAfter is how long an aborted run waits before it is retried.
-	// Defaults to 5m.
+	// RetryAfter is how long an aborted run waits before it is retried; an
+	// interval job waits at most Every. Defaults to 5m.
 	RetryAfter time.Duration
 	// PollInterval is how often Run ticks. Defaults to 30s.
 	PollInterval time.Duration
@@ -92,14 +101,14 @@ func WithTracerProvider(tp trace.TracerProvider) Option {
 
 // Job is a scheduled unit of work.
 type Job struct {
-	// Name identifies the job in scheduler_runs, leases and telemetry.
+	// Name identifies the job in the scheduler tables, leases and telemetry.
 	Name string
-	// Every is the interval of an interval job; 0 makes a daily job. Only
-	// daily jobs are supported so far.
+	// Every is the interval of an interval job, whose runs are due at the
+	// multiples of Every on Unix time; 0 makes a daily job.
 	Every time.Duration
 	// NotBefore delays a daily job past local midnight. It is added to the
 	// midnight instant, so a run due inside a DST gap still runs. It must be
-	// less than a day.
+	// less than a day, and zero for interval jobs.
 	NotBefore time.Duration
 	// Timeout bounds one run. Defaults to 30m.
 	Timeout time.Duration
@@ -110,13 +119,16 @@ type Job struct {
 
 // Run describes one run of a job.
 type Run struct {
-	// Date is the Business date the run is for.
+	// Date is the Business date the run is for. For an interval job it is
+	// the Business date of Due.
 	Date Date
-	// Due is the instant the run became due.
+	// Due is the instant the run became due. For an interval job it is the
+	// grid point the run is for.
 	Due time.Time
 	// Location is the business timezone.
 	Location *time.Location
-	// Attempt counts the attempts for Date, starting at 1.
+	// Attempt counts the attempts for Date, starting at 1. For an interval
+	// job it counts the attempts since the last successful run.
 	Attempt int
 }
 
@@ -138,16 +150,17 @@ type Failure struct {
 
 // Scheduler runs registered jobs when they are due.
 type Scheduler struct {
-	pool         *pgxpool.Pool
-	locker       locker
-	location     *time.Location
-	retryAfter   time.Duration
-	pollInterval time.Duration
-	namespace    string
-	runsTable    string
-	logger       *slog.Logger
-	tracer       trace.Tracer
-	metrics      metrics
+	pool           *pgxpool.Pool
+	locker         locker
+	location       *time.Location
+	retryAfter     time.Duration
+	pollInterval   time.Duration
+	namespace      string
+	runsTable      string
+	intervalsTable string
+	logger         *slog.Logger
+	tracer         trace.Tracer
+	metrics        metrics
 
 	mu     sync.Mutex
 	jobs   []Job
@@ -178,16 +191,17 @@ func New(pool *pgxpool.Pool, claims *lease.Claims, cfg Config, opts ...Option) (
 		o.logger.Warn("scheduler: create metrics", slog.Any(telemetry.LogError, err))
 	}
 	return &Scheduler{
-		pool:         pool,
-		locker:       o.locker,
-		location:     cfg.Location,
-		retryAfter:   cfg.RetryAfter,
-		pollInterval: cfg.PollInterval,
-		namespace:    cfg.Schema + ".scheduler",
-		runsTable:    pgx.Identifier{cfg.Schema, "scheduler_runs"}.Sanitize(),
-		logger:       o.logger,
-		tracer:       o.providers.Tracer(scope),
-		metrics:      m,
+		pool:           pool,
+		locker:         o.locker,
+		location:       cfg.Location,
+		retryAfter:     cfg.RetryAfter,
+		pollInterval:   cfg.PollInterval,
+		namespace:      cfg.Schema + ".scheduler",
+		runsTable:      pgx.Identifier{cfg.Schema, "scheduler_runs"}.Sanitize(),
+		intervalsTable: pgx.Identifier{cfg.Schema, "scheduler_intervals"}.Sanitize(),
+		logger:         o.logger,
+		tracer:         o.providers.Tracer(scope),
+		metrics:        m,
 	}, nil
 }
 
@@ -219,8 +233,10 @@ func validate(job Job) error {
 		return fmt.Errorf("%w: empty name", ErrInvalidJob)
 	case job.Run == nil:
 		return fmt.Errorf("%w: %s has no Run func", ErrInvalidJob, job.Name)
-	case job.Every != 0:
-		return fmt.Errorf("%w: %s: interval jobs are not supported", ErrInvalidJob, job.Name)
+	case job.Every < 0:
+		return fmt.Errorf("%w: %s: negative Every", ErrInvalidJob, job.Name)
+	case job.Every > 0 && job.NotBefore != 0:
+		return fmt.Errorf("%w: %s: NotBefore is only for daily jobs", ErrInvalidJob, job.Name)
 	case job.NotBefore < 0 || job.NotBefore >= 24*time.Hour:
 		return fmt.Errorf("%w: %s: NotBefore must be in [0, 24h)", ErrInvalidJob, job.Name)
 	case job.Timeout < 0:
