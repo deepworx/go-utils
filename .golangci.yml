@@ -1,0 +1,27 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - copyloopvar
+    - errorlint
+    - misspell
+    - noctx
+    - nolintlint
+    - rowserrcheck
+    - sqlclosecheck
+    - unconvert
+    - usestdlibvars
+  exclusions:
+    generated: lax
+    presets:
+      - std-error-handling
+
+formatters:
+  enable:
+    - gofmt
+    - goimports

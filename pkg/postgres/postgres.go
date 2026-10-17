@@ -116,7 +116,7 @@ func WithTx(ctx context.Context, pool *pgxpool.Pool, fn func(tx pgx.Tx) error) e
 
 	if err := fn(tx); err != nil {
 		if rbErr := tx.Rollback(ctx); rbErr != nil {
-			return fmt.Errorf("rollback transaction: %w (original: %v)", rbErr, err)
+			return fmt.Errorf("rollback transaction: %w (original: %w)", rbErr, err)
 		}
 		return err
 	}

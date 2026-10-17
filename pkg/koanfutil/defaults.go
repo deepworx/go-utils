@@ -36,7 +36,7 @@ func (p *defaultsProvider[T]) ReadBytes() ([]byte, error) {
 // structToMap converts a struct to map[string]any using koanf tags.
 func structToMap(v any) (map[string]any, error) {
 	val := reflect.ValueOf(v)
-	if val.Kind() == reflect.Ptr {
+	if val.Kind() == reflect.Pointer {
 		if val.IsNil() {
 			return nil, nil
 		}
@@ -67,7 +67,7 @@ func structToMap(v any) (map[string]any, error) {
 			continue
 		}
 
-		if fieldVal.Kind() == reflect.Ptr {
+		if fieldVal.Kind() == reflect.Pointer {
 			if fieldVal.IsNil() {
 				continue
 			}
@@ -93,7 +93,7 @@ func structToMap(v any) (map[string]any, error) {
 // isZeroValue reports whether v is the zero value for its type.
 func isZeroValue(v reflect.Value) bool {
 	switch v.Kind() {
-	case reflect.Ptr, reflect.Interface:
+	case reflect.Pointer, reflect.Interface:
 		return v.IsNil()
 	case reflect.Slice, reflect.Map:
 		return v.IsNil() || v.Len() == 0
