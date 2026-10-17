@@ -70,7 +70,20 @@ const (
 	LogError      = "error"
 )
 
-// LogKeys lists every log key.
+// Detail log keys, used by single runners next to the fixed vocabulary.
+const (
+	LogMessageID = "message_id"
+	LogOutcome   = "outcome"
+	LogReason    = "reason"
+	LogRetryAt   = "retry_at"
+	LogStack     = "stack"
+	LogCandidate = "candidate"
+	LogReplayed  = "replayed"
+	LogRemaining = "remaining"
+	LogLease     = "lease"
+)
+
+// LogKeys lists every key of the fixed vocabulary.
 var LogKeys = []string{
 	LogTenantID, LogConsumer, LogStreamType, LogStreamID, LogEventID,
 	LogEventType, LogPosition, LogAttempt, LogJob, LogSource, LogError,
