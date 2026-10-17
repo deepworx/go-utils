@@ -113,14 +113,19 @@ pool, _ := postgres.NewPool(ctx, postgres.Config{DSN: "postgres://localhost/db"}
 // Health check for grpchealth aggregator
 checker := postgres.NewHealthChecker(pool)
 
-// UnitOfWork for testable transaction management
-uow := postgres.NewUnitOfWork(pool)
-uow.Execute(ctx, func(ctx context.Context, tx postgres.Transaction) error {
-    return repo.Save(ctx, tx.Tx(), data)
+// UnitOfWork keeps the transaction in ctx; nested Execute calls join it.
+uow := postgres.NewUnitOfWork(pool, postgres.SetLocalTenant())
+uow.Execute(ctx, func(ctx context.Context) error {
+    // Conn returns the open transaction, or the pool outside one (sqlc DBTX).
+    return db.New(postgres.Conn(ctx, pool)).SaveOrder(ctx, params)
 })
 
-// For testing: InMemoryUnitOfWork (tx.Tx() returns nil)
+// In-memory prototypes: Stage buffers writes until the transaction commits.
 memUoW := postgres.NewInMemoryUnitOfWork()
+memUoW.Execute(ctx, func(ctx context.Context) error {
+    postgres.Stage(ctx, func() { orders[id] = order })
+    return nil
+})
 ```
 
 ### nats
