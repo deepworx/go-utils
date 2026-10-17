@@ -35,7 +35,7 @@ func (r Retry) Delay(failed int, src Source) (time.Duration, bool) {
 	if failed < 1 || failed >= r.MaxAttempts {
 		return 0, false
 	}
-	return jitter(r.exponential(failed), 2, src), true
+	return jitter{base: r.exponential(failed), divisor: 2}.apply(src), true
 }
 
 func (r Retry) exponential(failed int) time.Duration {
@@ -57,22 +57,28 @@ func (s Steps) Delay(failed int, src Source) (time.Duration, bool) {
 	if failed < 1 || failed > len(s) {
 		return 0, false
 	}
-	return jitter(s[failed-1], 5, src), true
+	return jitter{base: s[failed-1], divisor: 5}.apply(src), true
 }
 
 // Poll returns interval jittered down by up to a fifth, so that pods polling
 // the same table spread out.
 func Poll(interval time.Duration, src Source) time.Duration {
-	return jitter(interval, 5, src)
+	return jitter{base: interval, divisor: 5}.apply(src)
 }
 
-// jitter returns a value in [d - d/divisor, d].
-func jitter(d time.Duration, divisor int64, src Source) time.Duration {
-	span := int64(d) / divisor
+// jitter spreads base down by up to base/divisor.
+type jitter struct {
+	base    time.Duration
+	divisor int64
+}
+
+// apply returns a value in [base - base/divisor, base] drawn from src.
+func (j jitter) apply(src Source) time.Duration {
+	span := int64(j.base) / j.divisor
 	if span <= 0 {
-		return d
+		return j.base
 	}
-	return d - time.Duration(span) + time.Duration(draw(src, span+1))
+	return j.base - time.Duration(span) + time.Duration(draw(src, span+1))
 }
 
 func draw(src Source, n int64) int64 {

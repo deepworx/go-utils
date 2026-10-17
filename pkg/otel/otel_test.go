@@ -76,7 +76,7 @@ func TestMeterProvider_HistogramAggregation(t *testing.T) {
 			t.Parallel()
 
 			reader := sdkmetric.NewManualReader()
-			mp := newMeterProvider(resource.Empty(), reader, tt.histograms)
+			mp := newMeterProvider(meterProviderInput{res: resource.Empty(), reader: reader, histograms: tt.histograms})
 			t.Cleanup(func() { _ = mp.Shutdown(context.Background()) })
 
 			ctx := context.Background()

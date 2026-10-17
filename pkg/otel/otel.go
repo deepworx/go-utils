@@ -101,7 +101,7 @@ func Setup(ctx context.Context, cfg Config) error {
 	if err != nil {
 		return err
 	}
-	mp := newMeterProvider(res, reader, cfg.Histograms)
+	mp := newMeterProvider(meterProviderInput{res: res, reader: reader, histograms: cfg.Histograms})
 	otel.SetMeterProvider(mp)
 
 	lp, err := newLoggerProvider(ctx, res)
@@ -157,12 +157,19 @@ func newTracerProvider(ctx context.Context, res *resource.Resource) (*trace.Trac
 	), nil
 }
 
-func newMeterProvider(res *resource.Resource, reader metric.Reader, histograms Histograms) *metric.MeterProvider {
+// meterProviderInput is what a MeterProvider is built from.
+type meterProviderInput struct {
+	res        *resource.Resource
+	reader     metric.Reader
+	histograms Histograms
+}
+
+func newMeterProvider(in meterProviderInput) *metric.MeterProvider {
 	opts := []metric.Option{
-		metric.WithResource(res),
-		metric.WithReader(reader),
+		metric.WithResource(in.res),
+		metric.WithReader(in.reader),
 	}
-	if histograms != HistogramsExplicit {
+	if in.histograms != HistogramsExplicit {
 		opts = append(opts, metric.WithView(metric.NewView(
 			metric.Instrument{Kind: metric.InstrumentKindHistogram},
 			metric.Stream{Aggregation: metric.AggregationBase2ExponentialHistogram{

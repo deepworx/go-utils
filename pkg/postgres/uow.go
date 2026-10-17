@@ -88,12 +88,12 @@ func (u *PgUnitOfWork) Execute(ctx context.Context, fn func(ctx context.Context)
 	if TxFromContext(ctx) != nil {
 		return fn(ctx)
 	}
-	return runTx(ctx, u.pool, u.txOptions, func(tx pgx.Tx) error {
+	return runTx(ctx, txInput{pool: u.pool, opts: u.txOptions, fn: func(tx pgx.Tx) error {
 		if err := u.applyTenant(ctx, tx); err != nil {
 			return err
 		}
 		return fn(withTx(ctx, tx))
-	})
+	}})
 }
 
 func (u *PgUnitOfWork) applyTenant(ctx context.Context, tx pgx.Tx) error {
