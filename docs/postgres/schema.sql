@@ -39,3 +39,85 @@ CREATE TABLE public.identifier_sequences (
     last_value BIGINT NOT NULL CHECK (last_value > 0),
     PRIMARY KEY (tenant_id, context, name)
 );
+
+-- ---------------------------------------------------------------------------
+-- pkg/scheduler: one row per daily job and Business date. finished_at is set
+-- when an attempt ends; error IS NULL marks a successful run, which is never
+-- run again.
+-- ---------------------------------------------------------------------------
+CREATE TABLE public.scheduler_runs (
+    job           TEXT        NOT NULL,
+    business_date DATE        NOT NULL,
+    started_at    TIMESTAMPTZ NOT NULL,
+    finished_at   TIMESTAMPTZ,
+    attempt       INT         NOT NULL,
+    failures      INT         NOT NULL DEFAULT 0,
+    error         TEXT,
+    PRIMARY KEY (job, business_date)
+);
+
+-- ---------------------------------------------------------------------------
+-- pkg/scheduler: one row per interval job. due_at is the next instant the job
+-- is due: the next grid point, or the retry time of an aborted attempt.
+-- finished_at IS NULL marks a running attempt; error IS NULL marks a
+-- successful one.
+-- ---------------------------------------------------------------------------
+CREATE TABLE public.scheduler_intervals (
+    job         TEXT        PRIMARY KEY,
+    due_at      TIMESTAMPTZ NOT NULL,
+    started_at  TIMESTAMPTZ NOT NULL,
+    finished_at TIMESTAMPTZ,
+    attempt     INT         NOT NULL,
+    failures    INT         NOT NULL DEFAULT 0,
+    error       TEXT
+);
+
+-- ---------------------------------------------------------------------------
+-- pkg/inbox: deduplicated work queue of incoming external messages, one
+-- row per (source, key). Parked rows are kept until an operator acts.
+-- ---------------------------------------------------------------------------
+CREATE TABLE public.inbox_messages (
+    id               BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    source           TEXT        NOT NULL,
+    key              TEXT        NOT NULL,
+    type             TEXT        NOT NULL,
+    tenant_id        TEXT        NULL,
+    payload          BYTEA       NOT NULL,
+    status           TEXT        NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'done', 'ignored', 'parked', 'discarded')),
+    attempts         INT         NOT NULL DEFAULT 0,
+    claim_generation BIGINT      NOT NULL DEFAULT 0,
+    claimed_until    TIMESTAMPTZ NULL,
+    next_attempt_at  TIMESTAMPTZ NOT NULL,
+    received_at      TIMESTAMPTZ NOT NULL,
+    settled_at       TIMESTAMPTZ NULL,
+    error            TEXT        NULL,
+    trace_context    TEXT        NULL,
+    discarded_at     TIMESTAMPTZ NULL,
+    discarded_by     TEXT        NULL,
+    CONSTRAINT inbox_messages_source_key_key UNIQUE (source, key)
+);
+
+-- Claim scan of a Worker: due pending rows of one Source.
+CREATE INDEX inbox_messages_pending_idx
+    ON public.inbox_messages (source, next_attempt_at)
+    WHERE status = 'pending';
+
+-- Cleanup scan: settled rows by age. Parked rows are never cleaned up.
+CREATE INDEX inbox_messages_settled_idx
+    ON public.inbox_messages (settled_at)
+    WHERE status IN ('done', 'ignored', 'discarded');
+
+-- Wakes the Workers of the inserted message's Source.
+CREATE FUNCTION public.inbox_messages_notify() RETURNS trigger
+    LANGUAGE plpgsql AS
+$$
+BEGIN
+    PERFORM pg_notify('public.inbox', NEW.source);
+    RETURN NULL;
+END
+$$;
+
+CREATE TRIGGER inbox_messages_notify
+    AFTER INSERT ON public.inbox_messages
+    FOR EACH ROW EXECUTE FUNCTION public.inbox_messages_notify();

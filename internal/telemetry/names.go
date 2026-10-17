@@ -28,8 +28,8 @@ func SpanInboxProcess(source string) string { return "process inbox " + source }
 func SpanSchedulerRun(job string) string { return "scheduler.run " + job }
 
 // Span and metric attribute keys. Metric attributes are limited to
-// AttrConsumer, AttrJob, AttrSource and AttrStreamType; tenants and IDs
-// never become metric labels.
+// AttrConsumer, AttrJob, AttrSource and AttrStreamType, plus the bounded
+// AttrOutcome and AttrStatus; tenants and IDs never become metric labels.
 const (
 	AttrTenantID   attribute.Key = "eventsourcing.tenant_id"
 	AttrStreamType attribute.Key = "eventsourcing.stream_type"
@@ -44,6 +44,7 @@ const (
 	AttrJob        attribute.Key = "eventsourcing.job"
 	AttrSource     attribute.Key = "eventsourcing.source"
 	AttrOutcome    attribute.Key = "eventsourcing.outcome"
+	AttrStatus     attribute.Key = "eventsourcing.status"
 	AttrErrorType  attribute.Key = "error.type"
 )
 
@@ -51,7 +52,7 @@ const (
 var AttributeKeys = []attribute.Key{
 	AttrTenantID, AttrStreamType, AttrStreamID, AttrEventID, AttrEventType,
 	AttrEventTypes, AttrConsumer, AttrPosition, AttrBatchSize, AttrAttempt,
-	AttrJob, AttrSource, AttrOutcome, AttrErrorType,
+	AttrJob, AttrSource, AttrOutcome, AttrStatus, AttrErrorType,
 }
 
 // Log keys, the fixed slog vocabulary of every runner.
