@@ -53,7 +53,12 @@ type port interface {
 	// advance moves the Cursor if it is still at m.from. Inside a Cursor
 	// transaction it commits with it.
 	advance(ctx context.Context, m move) error
-	stop(ctx context.Context, s Stop) error
+	// stop marks the Consumer Stopped while its Cursor is still at in.at,
+	// and fails with errFenced once another runner moved it.
+	stop(ctx context.Context, in stopInput) error
+	// enterTenant prepares the Cursor transaction in ctx for the handler of
+	// an event of tenant.
+	enterTenant(ctx context.Context, tenant string) error
 	// changed returns a channel that receives or closes when new events may
 	// be visible.
 	changed() <-chan struct{}
@@ -86,6 +91,12 @@ type frontier struct {
 // wrote a matching event there.
 func (f frontier) covers(pos eventstore.Cursor) bool {
 	return pos.TransactionID < f.xmin && (f.next.IsZero() || f.next.Compare(pos) > 0)
+}
+
+type stopInput struct {
+	// at is the Cursor the failing event follows.
+	at   eventstore.Cursor
+	stop Stop
 }
 
 type move struct {

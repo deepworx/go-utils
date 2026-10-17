@@ -120,3 +120,43 @@ func TestPgBatchSpanLinksProducers(t *testing.T) {
 		}
 	}
 }
+
+// Runtimes sharing a MeterProvider report xmin age as one series, and a
+// closed Runtime stops reporting it.
+func TestPgXminAgeOncePerMeterProvider(t *testing.T) {
+	e := newPgEnv(t, pgEnvConfig{})
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	var runtimes []*consumer.PgRuntime
+	for range 2 {
+		rt, err := consumer.NewPgRuntime(consumer.PgRuntimeConfig{
+			Pool: e.pool, Store: e.store, Claims: lease.NewClaims(e.pool, lease.Config{}), MeterProvider: mp,
+		})
+		if err != nil {
+			t.Fatalf("NewPgRuntime: %v", err)
+		}
+		runtimes = append(runtimes, rt)
+	}
+	points := func() int {
+		g, _ := collect(t, reader)["eventsourcing.xmin.age"].(metricdata.Gauge[int64])
+		return len(g.DataPoints)
+	}
+
+	steps := []struct {
+		name  string
+		close int
+		want  int
+	}{
+		{"both open", -1, 1},
+		{"one closed", 0, 1},
+		{"both closed", 1, 0},
+	}
+	for _, s := range steps {
+		if s.close >= 0 {
+			runtimes[s.close].Close()
+		}
+		if got := points(); got != s.want {
+			t.Errorf("%s: xmin age points = %d, want %d", s.name, got, s.want)
+		}
+	}
+}

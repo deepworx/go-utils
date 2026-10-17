@@ -4,6 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
+	"sync"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -113,20 +117,84 @@ func (in instruments) reportGauges(status func(context.Context) (Status, error))
 	}
 }
 
-// reportXminAge reports eventsourcing.xmin.age from age at each
-// collection, once per Runtime and therefore once per process. Errors go
-// to otel.Handle.
-func reportXminAge(meter metric.Meter, age func(context.Context) (int64, error)) {
-	_, err := telemetry.XminAge.Int64ObservableGauge(meter,
-		metric.WithInt64Callback(func(ctx context.Context, o metric.Int64Observer) error {
-			a, err := age(ctx)
-			if err != nil {
-				return fmt.Errorf("poll xmin age: %w", err)
-			}
-			o.Observe(a)
-			return nil
-		}))
+// xminGauges holds one eventsourcing.xmin.age callback per Meter, so the
+// PgRuntimes of one process report a single series.
+var xminGauges = xminRegistry{byMeter: make(map[metric.Meter]*xminGauge)}
+
+type xminRegistry struct {
+	mu      sync.Mutex
+	byMeter map[metric.Meter]*xminGauge
+}
+
+// xminGauge is the callback of one Meter. It polls the pool of the oldest
+// open PgRuntime; xmin is cluster-wide.
+type xminGauge struct {
+	reg   metric.Registration
+	pools []*pgxpool.Pool
+}
+
+// add reports eventsourcing.xmin.age through meter, polled on pool, until
+// the returned remove is called for every add. Errors go to otel.Handle.
+func (r *xminRegistry) add(meter metric.Meter, pool *pgxpool.Pool) (remove func()) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	g := r.byMeter[meter]
+	if g == nil {
+		var err error
+		if g, err = r.register(meter); err != nil {
+			otel.Handle(fmt.Errorf("register xmin age gauge: %w", err))
+			return func() {}
+		}
+		r.byMeter[meter] = g
+	}
+	g.pools = append(g.pools, pool)
+	var once sync.Once
+	return func() { once.Do(func() { r.remove(meter, pool) }) }
+}
+
+// register creates the callback of meter. The caller holds r.mu.
+func (r *xminRegistry) register(meter metric.Meter) (*xminGauge, error) {
+	gauge, err := telemetry.XminAge.Int64ObservableGauge(meter)
 	if err != nil {
-		otel.Handle(fmt.Errorf("register xmin age gauge: %w", err))
+		return nil, err
+	}
+	g := &xminGauge{}
+	g.reg, err = meter.RegisterCallback(func(ctx context.Context, o metric.Observer) error {
+		r.mu.Lock()
+		if len(g.pools) == 0 {
+			r.mu.Unlock()
+			return nil
+		}
+		pool := g.pools[0]
+		r.mu.Unlock()
+		var age int64
+		if err := pool.QueryRow(ctx, xminAgeQuery).Scan(&age); err != nil {
+			return fmt.Errorf("poll xmin age: %w", err)
+		}
+		o.ObserveInt64(gauge, age)
+		return nil
+	}, gauge)
+	if err != nil {
+		return nil, err
+	}
+	return g, nil
+}
+
+func (r *xminRegistry) remove(meter metric.Meter, pool *pgxpool.Pool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	g := r.byMeter[meter]
+	if g == nil {
+		return
+	}
+	if i := slices.Index(g.pools, pool); i >= 0 {
+		g.pools = slices.Delete(g.pools, i, i+1)
+	}
+	if len(g.pools) > 0 {
+		return
+	}
+	delete(r.byMeter, meter)
+	if err := g.reg.Unregister(); err != nil {
+		otel.Handle(fmt.Errorf("unregister xmin age gauge: %w", err))
 	}
 }

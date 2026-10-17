@@ -112,6 +112,7 @@ func (e pgEnv) runtimeWithListener(t *testing.T) (*consumer.PgRuntime, *notify.L
 	if err != nil {
 		t.Fatalf("NewPgRuntime: %v", err)
 	}
+	t.Cleanup(rt.Close)
 	return rt, listener
 }
 

@@ -273,12 +273,17 @@ func (p *memPort) advance(ctx context.Context, m move) error {
 	return nil
 }
 
-func (p *memPort) stop(_ context.Context, s Stop) error {
+func (p *memPort) stop(_ context.Context, in stopInput) error {
 	p.rt.mu.Lock()
 	defer p.rt.mu.Unlock()
-	p.cursor.stopped = &s
+	if p.cursor.cursor != in.at {
+		return fmt.Errorf("cursor not at %v: %w", in.at, errFenced)
+	}
+	p.cursor.stopped = &in.stop
 	return nil
 }
+
+func (p *memPort) enterTenant(context.Context, string) error { return nil }
 
 func (p *memPort) changed() <-chan struct{} { return p.rt.feed.Changed() }
 

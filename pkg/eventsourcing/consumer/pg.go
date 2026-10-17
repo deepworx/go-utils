@@ -45,9 +45,15 @@ type PgRuntimeConfig struct {
 	// Claims grants each Consumer its lease. Required, and Claims.Run must
 	// be running.
 	Claims *lease.Claims
-	// MeterProvider records the eventsourcing.xmin.age gauge. Optional: the
-	// default is the OTel global.
+	// MeterProvider records the eventsourcing.xmin.age gauge, one series
+	// per MeterProvider until Close. Optional: the default is the OTel
+	// global.
 	MeterProvider metric.MeterProvider
+	// SetLocalTenant makes a Cursor transaction set app.tenant_id to the
+	// Tenant of each event before its handler runs, like
+	// postgres.SetLocalTenant does for a UnitOfWork, so row-level security
+	// on read models sees the Tenant. Off by default.
+	SetLocalTenant bool
 }
 
 // PgRuntime runs Consumers on an eventstore.PgStore. Cursors live in the
@@ -60,19 +66,30 @@ type PgRuntimeConfig struct {
 // Cursor transaction is a Postgres transaction in ctx: handler writes made
 // through postgres.Conn commit or roll back together with the Cursor.
 type PgRuntime struct {
-	pool     *pgxpool.Pool
-	schema   string
-	codec    *eventstore.Codec
-	uow      *postgres.PgUnitOfWork
-	listener *notify.Listener
-	claims   *lease.Claims
-	channel  string
-	ns       string
-	queries  pgQueries
+	pool   *pgxpool.Pool
+	schema string
+	codec  *eventstore.Codec
+	uow    *postgres.PgUnitOfWork
+	// tenantScoped sets app.tenant_id per event in Cursor transactions.
+	tenantScoped bool
+	listener     *notify.Listener
+	claims       *lease.Claims
+	channel      string
+	ns           string
+	queries      pgQueries
+
+	// stopXmin ends this Runtime's share of the xmin age gauge.
+	stopXmin func()
 
 	mu    sync.Mutex
 	ports map[string]*pgPort
 }
+
+// Close stops reporting eventsourcing.xmin.age for this Runtime; the gauge
+// keeps reporting while another PgRuntime of the process with the same
+// MeterProvider is open. Call it once the Runtime's Consumers have
+// stopped. Close is idempotent.
+func (rt *PgRuntime) Close() { rt.stopXmin() }
 
 // pgSource is the read side of eventstore.PgStore, reached through
 // internal/storehook.
@@ -91,24 +108,28 @@ func NewPgRuntime(cfg PgRuntimeConfig) (*PgRuntime, error) {
 	if !ok {
 		return nil, fmt.Errorf("new pg runtime: Store is required: %w", ErrInvalidConfig)
 	}
-	store := src.(pgSource)
+	store, ok := src.(pgSource)
+	if !ok {
+		return nil, fmt.Errorf("new pg runtime: store %T has no read side: %w", src, ErrInvalidConfig)
+	}
 	schema := store.Schema()
-	reportXminAge(telemetry.Providers{MeterProvider: cfg.MeterProvider}.Meter(scope), func(ctx context.Context) (int64, error) {
-		var age int64
-		err := cfg.Pool.QueryRow(ctx, xminAgeQuery).Scan(&age)
-		return age, err
-	})
+	if err := notify.CheckChannel(schema + ".changes"); err != nil {
+		return nil, fmt.Errorf("new pg runtime: schema %q: %w", schema, err)
+	}
+	stopXmin := xminGauges.add(telemetry.Providers{MeterProvider: cfg.MeterProvider}.Meter(scope), cfg.Pool)
 	return &PgRuntime{
-		pool:     cfg.Pool,
-		schema:   schema,
-		codec:    store.Codec(),
-		uow:      postgres.NewUnitOfWork(cfg.Pool),
-		listener: cfg.Listener,
-		claims:   cfg.Claims,
-		channel:  schema + ".events",
-		ns:       schema + ".consumer",
-		queries:  newPgQueries(schema),
-		ports:    make(map[string]*pgPort),
+		stopXmin:     stopXmin,
+		pool:         cfg.Pool,
+		schema:       schema,
+		codec:        store.Codec(),
+		uow:          postgres.NewUnitOfWork(cfg.Pool),
+		tenantScoped: cfg.SetLocalTenant,
+		listener:     cfg.Listener,
+		claims:       cfg.Claims,
+		channel:      schema + ".events",
+		ns:           schema + ".consumer",
+		queries:      newPgQueries(schema),
+		ports:        make(map[string]*pgPort),
 	}, nil
 }
 
@@ -263,24 +284,28 @@ func (p *pgPort) subscribe(ctx context.Context) (stop func(), err error) {
 	}, nil
 }
 
-// claimFilter creates the Cursor row with the configured filter, or
-// records a changed filter on it. It stops the Consumer instead when the
-// change would leave a gap. A Stopped Cursor is checked again once resumed.
 // createCursor creates the missing Cursor row, at the head of the log when
 // the Consumer seeds at its head.
 func (p *pgPort) createCursor(ctx context.Context, tx pgx.Tx) error {
 	if !p.seed {
-		_, err := tx.Exec(ctx, p.rt.queries.claim, p.name, p.types)
-		return err
+		if _, err := tx.Exec(ctx, p.rt.queries.claim, p.name, p.types); err != nil {
+			return fmt.Errorf("create cursor %q: %w", p.name, err)
+		}
+		return nil
 	}
 	head, err := p.head(ctx)
 	if err != nil {
 		return fmt.Errorf("seed cursor: %w", err)
 	}
-	_, err = tx.Exec(ctx, p.rt.queries.seed, p.name, p.types, xid(head), head.Position)
-	return err
+	if _, err := tx.Exec(ctx, p.rt.queries.seed, p.name, p.types, xid(head), head.Position); err != nil {
+		return fmt.Errorf("seed cursor %q: %w", p.name, err)
+	}
+	return nil
 }
 
+// claimFilter creates the Cursor row with the configured filter, or
+// records a changed filter on it. It stops the Consumer instead when the
+// change would leave a gap. A Stopped Cursor is checked again once resumed.
 func (p *pgPort) claimFilter(ctx context.Context) error {
 	return pgx.BeginFunc(ctx, p.rt.pool, func(tx pgx.Tx) error {
 		var (
@@ -294,36 +319,49 @@ func (p *pgPort) claimFilter(ctx context.Context) error {
 		case errors.Is(err, pgx.ErrNoRows):
 			return p.createCursor(ctx, tx)
 		case err != nil:
-			return err
+			return fmt.Errorf("lock cursor %q: %w", p.name, err)
 		case stopped || slices.Equal(stored, p.types):
 			return nil
 		}
 		change := diffFilter(stored, p.types)
 		if change.needsHistoryCheck(p.mode) {
-			gap, err := p.hasHistory(ctx, tx, change, cursor)
+			gap, err := p.hasHistory(ctx, historyInput{tx: tx, change: change, upTo: cursor})
 			if err != nil {
 				return fmt.Errorf("check filter change: %w", err)
 			}
 			if gap {
-				_, err := tx.Exec(ctx, p.rt.queries.stop, p.name, time.Now(), change.cause())
-				return err
+				_, err := tx.Exec(ctx, p.rt.queries.stop, p.name, time.Now(), change.cause(), xid(cursor), cursor.Position)
+				if err != nil {
+					return fmt.Errorf("stop cursor %q: %w", p.name, err)
+				}
+				return nil
 			}
 		}
-		_, err = tx.Exec(ctx, p.rt.queries.setFilter, p.name, p.types)
-		return err
+		if _, err := tx.Exec(ctx, p.rt.queries.setFilter, p.name, p.types); err != nil {
+			return fmt.Errorf("set filter of cursor %q: %w", p.name, err)
+		}
+		return nil
 	})
 }
 
-// hasHistory reports whether an event of a type added by f lies at or below
-// upTo.
-func (p *pgPort) hasHistory(ctx context.Context, tx pgx.Tx, f filterChange, upTo eventstore.Cursor) (bool, error) {
-	query, types := p.rt.queries.historyFiltered, f.added
-	if f.widened {
-		query, types = p.rt.queries.historyOutside, f.stored
+type historyInput struct {
+	tx     pgx.Tx
+	change filterChange
+	upTo   eventstore.Cursor
+}
+
+// hasHistory reports whether an event of a type added by in.change lies at
+// or below in.upTo.
+func (p *pgPort) hasHistory(ctx context.Context, in historyInput) (bool, error) {
+	query, types := p.rt.queries.historyFiltered, in.change.added
+	if in.change.widened {
+		query, types = p.rt.queries.historyOutside, in.change.stored
 	}
 	var found bool
-	err := tx.QueryRow(ctx, query, types, xid(upTo), upTo.Position).Scan(&found)
-	return found, err
+	if err := in.tx.QueryRow(ctx, query, types, xid(in.upTo), in.upTo.Position).Scan(&found); err != nil {
+		return false, fmt.Errorf("query history: %w", err)
+	}
+	return found, nil
 }
 
 // load reads the Cursor. While this port holds the lease, a filter that
@@ -357,7 +395,7 @@ func (p *pgPort) loadRow(ctx context.Context) (cursorState, []string, error) {
 	case errors.Is(err, pgx.ErrNoRows):
 		return cursorState{}, p.types, nil
 	case err != nil:
-		return cursorState{}, nil, err
+		return cursorState{}, nil, fmt.Errorf("load cursor %q: %w", p.name, err)
 	}
 	if stopped {
 		state.stopped = &Stop{}
@@ -371,16 +409,26 @@ func (p *pgPort) loadRow(ctx context.Context) (cursorState, []string, error) {
 	return state, stored, nil
 }
 
-func (p *pgPort) read(ctx context.Context, in readInput) ([]record, error) {
-	query, args := p.rt.queries.read, []any{xid(in.after), in.after.Position, in.limit}
-	if len(p.types) > 0 {
-		query, args = p.rt.queries.readFiltered, append([]any{p.types}, args...)
+// pick returns plain with args, or filtered with the filter prepended to
+// args when the Consumer filters by event type.
+func (p *pgPort) pick(plain, filtered string, args ...any) (string, []any) {
+	if len(p.types) == 0 {
+		return plain, args
 	}
+	return filtered, append([]any{p.types}, args...)
+}
+
+func (p *pgPort) read(ctx context.Context, in readInput) ([]record, error) {
+	query, args := p.pick(p.rt.queries.read, p.rt.queries.readFiltered, xid(in.after), in.after.Position, in.limit)
 	rows, err := p.rt.pool.Query(ctx, query, args...)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read events after %v: %w", in.after, err)
 	}
-	return pgx.CollectRows(rows, scanRecord)
+	records, err := pgx.CollectRows(rows, scanRecord)
+	if err != nil {
+		return nil, fmt.Errorf("read events after %v: %w", in.after, err)
+	}
+	return records, nil
 }
 
 func scanRecord(row pgx.CollectableRow) (record, error) {
@@ -408,16 +456,16 @@ func scanRecord(row pgx.CollectableRow) (record, error) {
 }
 
 func (p *pgPort) head(ctx context.Context) (eventstore.Cursor, error) {
-	query, args := p.rt.queries.head, []any(nil)
-	if len(p.types) > 0 {
-		query, args = p.rt.queries.headFiltered, []any{p.types}
-	}
+	query, args := p.pick(p.rt.queries.head, p.rt.queries.headFiltered)
 	var c eventstore.Cursor
 	err := p.rt.pool.QueryRow(ctx, query, args...).Scan(&c.TransactionID, &c.Position)
-	if errors.Is(err, pgx.ErrNoRows) {
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
 		return eventstore.Cursor{}, nil
+	case err != nil:
+		return eventstore.Cursor{}, fmt.Errorf("read head: %w", err)
 	}
-	return c, err
+	return c, nil
 }
 
 func (p *pgPort) status(ctx context.Context) (Status, error) {
@@ -427,10 +475,8 @@ func (p *pgPort) status(ctx context.Context) (Status, error) {
 	}
 	s := Status{Cursor: state.cursor, Stopped: state.stopped}
 
-	query, args := p.rt.queries.pending, []any{xid(state.cursor), state.cursor.Position, PendingCap + 1}
-	if len(p.types) > 0 {
-		query, args = p.rt.queries.pendingFiltered, append([]any{p.types}, args...)
-	}
+	query, args := p.pick(p.rt.queries.pending, p.rt.queries.pendingFiltered,
+		xid(state.cursor), state.cursor.Position, PendingCap+1)
 	if err := p.rt.pool.QueryRow(ctx, query, args...).Scan(&s.Pending); err != nil {
 		return Status{}, fmt.Errorf("count pending: %w", err)
 	}
@@ -448,17 +494,14 @@ func (p *pgPort) status(ctx context.Context) (Status, error) {
 }
 
 func (p *pgPort) frontier(ctx context.Context, after eventstore.Cursor) (frontier, error) {
-	query, args := p.rt.queries.frontier, []any{xid(after), after.Position}
-	if len(p.types) > 0 {
-		query, args = p.rt.queries.frontierFiltered, append([]any{p.types}, args...)
-	}
+	query, args := p.pick(p.rt.queries.frontier, p.rt.queries.frontierFiltered, xid(after), after.Position)
 	var (
 		f       frontier
 		nextXID *uint64
 		nextPos *int64
 	)
 	if err := p.rt.pool.QueryRow(ctx, query, args...).Scan(&f.xmin, &nextXID, &nextPos); err != nil {
-		return frontier{}, err
+		return frontier{}, fmt.Errorf("read frontier after %v: %w", after, err)
 	}
 	if nextXID != nil && nextPos != nil {
 		f.next = eventstore.Cursor{TransactionID: *nextXID, Position: *nextPos}
@@ -481,7 +524,7 @@ func (p *pgPort) advance(ctx context.Context, m move) error {
 	tag, err := postgres.Conn(ctx, p.rt.pool).Exec(ctx, p.rt.queries.advance,
 		p.name, xid(m.from), m.from.Position, xid(m.to), m.to.Position)
 	if err != nil {
-		return err
+		return fmt.Errorf("advance cursor %q: %w", p.name, err)
 	}
 	if tag.RowsAffected() == 0 {
 		return fmt.Errorf("cursor %q not at %v: %w", p.name, m.from, errFenced)
@@ -489,9 +532,25 @@ func (p *pgPort) advance(ctx context.Context, m move) error {
 	return nil
 }
 
-func (p *pgPort) stop(ctx context.Context, s Stop) error {
-	_, err := p.rt.pool.Exec(ctx, p.rt.queries.stop, p.name, s.At, s.Cause)
-	return err
+func (p *pgPort) stop(ctx context.Context, in stopInput) error {
+	tag, err := p.rt.pool.Exec(ctx, p.rt.queries.stop, p.name, in.stop.At, in.stop.Cause, xid(in.at), in.at.Position)
+	if err != nil {
+		return fmt.Errorf("stop cursor %q: %w", p.name, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("cursor %q not at %v: %w", p.name, in.at, errFenced)
+	}
+	return nil
+}
+
+func (p *pgPort) enterTenant(ctx context.Context, tenant string) error {
+	if !p.rt.tenantScoped {
+		return nil
+	}
+	if _, err := postgres.Conn(ctx, p.rt.pool).Exec(ctx, `SELECT set_config('app.tenant_id', $1, true)`, tenant); err != nil {
+		return fmt.Errorf("set local app.tenant_id: %w", err)
+	}
+	return nil
 }
 
 func (p *pgPort) changed() <-chan struct{} { return p.wake }
@@ -573,7 +632,7 @@ func newPgQueries(schema string) pgQueries {
 		advance: `UPDATE ` + cursors + ` SET transaction_id = $4::text::xid8, global_position = $5
 			WHERE name = $1 AND transaction_id = $2::text::xid8 AND global_position = $3`,
 		stop: `UPDATE ` + cursors + ` SET stopped = true, stopped_at = $2, stopped_error = $3
-			WHERE name = $1`,
+			WHERE name = $1 AND transaction_id = $4::text::xid8 AND global_position = $5`,
 		resume: `UPDATE ` + cursors + ` SET stopped = false, stopped_at = NULL, stopped_error = NULL
 			WHERE name = $1`,
 
