@@ -9,7 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/deepworx/go-utils/internal/projectionhook"
+	"github.com/deepworx/go-utils/internal/consumerhook"
 	"github.com/deepworx/go-utils/pkg/ctxutil"
 	"github.com/deepworx/go-utils/pkg/eventsourcing/consumer"
 	"github.com/deepworx/go-utils/pkg/eventsourcing/eventstore"
@@ -43,7 +43,7 @@ type notifierKey struct{}
 // notifier is what Notify finds in a version Handler's ctx. Its changes is
 // nil in the shadow.
 type notifier struct {
-	changes projectionhook.Changes
+	changes consumerhook.Changes
 }
 
 // handler runs a version's Handler with its notifier in ctx.
@@ -52,7 +52,7 @@ type handler struct {
 	notifier *notifier
 }
 
-func newHandler(inner consumer.Handler, changes projectionhook.Changes) *handler {
+func newHandler(inner consumer.Handler, changes consumerhook.Changes) *handler {
 	return &handler{inner: inner, notifier: &notifier{changes: changes}}
 }
 
@@ -100,7 +100,7 @@ func Notify(ctx context.Context, entity string, id uuid.UUID) error {
 
 // Subscription receives the Changes of one Runtime.
 type Subscription struct {
-	feed   projectionhook.Feed
+	feed   consumerhook.Feed
 	out    chan Change
 	done   chan struct{}
 	exited chan struct{}
@@ -112,7 +112,7 @@ type Subscription struct {
 // Listener and fails with consumer.ErrInvalidConfig when there is none;
 // changes sent before the LISTEN took effect are not delivered.
 func Subscribe(rt consumer.Runtime) (*Subscription, error) {
-	changes, ok := projectionhook.ChangesOf(rt)
+	changes, ok := consumerhook.RuntimeChanges(rt)
 	if !ok {
 		return nil, fmt.Errorf("projection: subscribe: unknown runtime %T: %w", rt, consumer.ErrInvalidConfig)
 	}

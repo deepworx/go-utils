@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/deepworx/go-utils/internal/projectionhook"
+	"github.com/deepworx/go-utils/internal/consumerhook"
 	"github.com/deepworx/go-utils/pkg/eventsourcing/consumer"
 	"github.com/deepworx/go-utils/pkg/eventsourcing/eventstore"
 )
@@ -57,7 +57,7 @@ func New(rt consumer.Runtime, cfg Config, opts ...consumer.Option) (*Projection,
 	if err := validate(cfg); err != nil {
 		return nil, fmt.Errorf("new projection %q: %w", cfg.Name, err)
 	}
-	changes, ok := projectionhook.ChangesOf(rt)
+	changes, ok := consumerhook.RuntimeChanges(rt)
 	if !ok {
 		return nil, fmt.Errorf("new projection %q: unknown runtime %T: %w", cfg.Name, rt, consumer.ErrInvalidConfig)
 	}
@@ -88,7 +88,7 @@ type versionInput struct {
 	cfg     Config
 	version Version
 	// changes sends the version's notifications; nil for the shadow.
-	changes projectionhook.Changes
+	changes consumerhook.Changes
 	opts    []consumer.Option
 }
 
@@ -174,7 +174,7 @@ func (p *Projection) Reset(ctx context.Context) error {
 		}
 		consumers[i] = c
 	}
-	err := projectionhook.Reset(ctx, projectionhook.ResetInput{
+	err := consumerhook.Reset(ctx, consumerhook.ResetInput{
 		Consumers: consumers,
 		Clear: func(ctx context.Context) error {
 			for _, clear := range p.clears {

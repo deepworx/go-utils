@@ -8,20 +8,16 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/deepworx/go-utils/internal/projectionhook"
+	"github.com/deepworx/go-utils/internal/consumerhook"
 	"github.com/deepworx/go-utils/pkg/eventsourcing/eventstore"
 	"github.com/deepworx/go-utils/pkg/postgres"
 	"github.com/deepworx/go-utils/pkg/postgres/notify"
 )
 
-// This file serves package projection through internal/projectionhook: the
+// This file serves package projection through internal/consumerhook: the
 // change channel of each Runtime and resetting Consumers.
 
-func init() {
-	projectionhook.Register(changesOf, reset)
-}
-
-func changesOf(rt any) (projectionhook.Changes, bool) {
+func changesOf(rt any) (consumerhook.Changes, bool) {
 	switch rt := rt.(type) {
 	case *InMemoryRuntime:
 		if rt == nil {
@@ -50,7 +46,7 @@ type rewinder interface {
 
 // reset rewinds in.Consumers after in.Clear in one Cursor transaction, while
 // holding their leases.
-func reset(ctx context.Context, in projectionhook.ResetInput) error {
+func reset(ctx context.Context, in consumerhook.ResetInput) error {
 	if len(in.Consumers) == 0 {
 		return fmt.Errorf("reset: no consumers: %w", ErrInvalidConfig)
 	}
@@ -137,7 +133,7 @@ func (m *memChanges) Publish(ctx context.Context, payload string) error {
 	return nil
 }
 
-func (m *memChanges) Subscribe() (projectionhook.Feed, error) {
+func (m *memChanges) Subscribe() (consumerhook.Feed, error) {
 	f := &memChangeFeed{changes: m, ch: make(chan notify.Notification, changeBuffer)}
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -193,7 +189,7 @@ func (c *pgChanges) Publish(ctx context.Context, payload string) error {
 	return err
 }
 
-func (c *pgChanges) Subscribe() (projectionhook.Feed, error) {
+func (c *pgChanges) Subscribe() (consumerhook.Feed, error) {
 	if c.listener == nil {
 		return nil, fmt.Errorf("subscribe %s: the PgRuntime has no Listener: %w", c.channel, ErrInvalidConfig)
 	}

@@ -149,6 +149,46 @@ END
 $$;
 
 -- ---------------------------------------------------------------------------
+-- pkg/eventsourcing/reactor: Parked Streams. A parked_streams row is the
+-- hold of one Stream of a Reactor (consumer); the live handler, Redrive and
+-- Discard lock it, so they serialize per (consumer, tenant_id, stream_id).
+-- parked_events are the held events in stream_position order: the failed
+-- one has a cause, the ones held behind it have none. A released event is
+-- deleted; a discarded one stays with discarded_at and discarded_by, and
+-- the service owns its cleanup.
+-- ---------------------------------------------------------------------------
+CREATE TABLE public.parked_streams (
+    consumer   TEXT        NOT NULL,
+    tenant_id  TEXT        NOT NULL,
+    stream_id  UUID        NOT NULL,
+    parked_at  TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (consumer, tenant_id, stream_id)
+);
+
+CREATE TABLE public.parked_events (
+    consumer        TEXT        NOT NULL,
+    tenant_id       TEXT        NOT NULL,
+    stream_id       UUID        NOT NULL,
+    stream_type     TEXT        NOT NULL,
+    stream_position INT         NOT NULL,
+    event_id        UUID        NOT NULL,
+    event_type      TEXT        NOT NULL,
+    cause           TEXT        NULL,
+    attempts        INT         NOT NULL DEFAULT 0,
+    parked_at       TIMESTAMPTZ NOT NULL,
+    next_attempt_at TIMESTAMPTZ NULL,
+    exhausted       BOOLEAN     NOT NULL DEFAULT false,
+    discarded_at    TIMESTAMPTZ NULL,
+    discarded_by    TEXT        NULL,
+    PRIMARY KEY (consumer, event_id)
+);
+
+-- The held events of one Stream in order.
+CREATE INDEX parked_events_held_idx
+    ON public.parked_events (consumer, tenant_id, stream_id, stream_position)
+    WHERE discarded_at IS NULL;
+
+-- ---------------------------------------------------------------------------
 -- pkg/postgres/guard: tenant-scoped uniqueness rules.
 -- ---------------------------------------------------------------------------
 CREATE TABLE public.guards (
