@@ -33,6 +33,8 @@ go get github.com/deepworx/go-utils
 | otelconnect | `connectrpc.com/otelconnect` | OpenTelemetry tracing/metrics (external) |
 | validate | `connectrpc.com/validate` | Request validation with protovalidate (external) |
 
+Event sourcing on Postgres (`pkg/eventsourcing/...`, `pkg/inbox`, `pkg/scheduler`): start with the [quickstart](docs/eventsourcing/quickstart.md).
+
 ## Documentation
 
 ### ctxutil
