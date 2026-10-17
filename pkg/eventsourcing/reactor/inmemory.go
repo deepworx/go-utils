@@ -7,6 +7,7 @@ import (
 	"maps"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/deepworx/go-utils/pkg/eventsourcing/eventstore"
 )
@@ -26,6 +27,15 @@ type memHold struct {
 	mu     sync.Mutex
 	seq    uint64
 	events []memParked
+	// redrives counts the failed auto-redrives; next is the next one, zero
+	// for none.
+	redrives  int
+	next      time.Time
+	exhausted bool
+}
+
+func (h *memHold) due(now time.Time) bool {
+	return !h.exhausted && !h.next.IsZero() && !h.next.After(now)
 }
 
 type memParked struct {
@@ -97,6 +107,9 @@ func (m *memParks) holdIfParked(_ context.Context, in parkInput) (bool, error) {
 func (m *memParks) park(_ context.Context, in parkInput) error {
 	h, _ := m.lock(streamOf(in.env), true)
 	defer h.mu.Unlock()
+	if len(h.events) == 0 {
+		h.next = in.nextAttempt
+	}
 	h.add(in)
 	return nil
 }
@@ -107,6 +120,9 @@ func (m *memParks) redriveHead(ctx context.Context, in redriveInput) (headResult
 		return headResult{}, ErrNotParked
 	}
 	defer h.mu.Unlock()
+	if in.auto != nil && !h.due(in.auto.now) {
+		return headResult{}, ErrNotParked
+	}
 	if len(h.events) == 0 {
 		m.release(in.stream)
 		return headResult{}, nil
@@ -115,6 +131,10 @@ func (m *memParks) redriveHead(ctx context.Context, in redriveInput) (headResult
 	if err := m.replay(ctx, in.replay, head); err != nil {
 		head.Cause = err.Error()
 		head.Attempts++
+		if in.auto != nil {
+			h.redrives++
+			h.next, h.exhausted = in.auto.next(h.redrives)
+		}
 		return headResult{remaining: len(h.events), failure: err}, nil
 	}
 	h.events = h.events[1:]
@@ -153,16 +173,64 @@ func (m *memParks) discard(_ context.Context, in discardInput) error {
 	return nil
 }
 
-func (m *memParks) list(_ context.Context, tenant string) ([]Parked, error) {
+// snapshot returns the holds of tenant, or of all for "". Their contents
+// must be read under each hold's lock.
+func (m *memParks) snapshot(tenant string) map[Stream]*memHold {
 	m.mu.Lock()
+	defer m.mu.Unlock()
 	holds := make(map[Stream]*memHold, len(m.holds))
 	for s, h := range m.holds {
 		if tenant == "" || s.Tenant == tenant {
 			holds[s] = h
 		}
 	}
-	m.mu.Unlock()
+	return holds
+}
 
+func (m *memParks) due(_ context.Context, now time.Time) ([]Stream, error) {
+	next := make(map[Stream]time.Time)
+	for s, h := range m.snapshot("") {
+		h.mu.Lock()
+		if h.due(now) {
+			next[s] = h.next
+		}
+		h.mu.Unlock()
+	}
+	return slices.SortedFunc(maps.Keys(next), func(a, b Stream) int {
+		return next[a].Compare(next[b])
+	}), nil
+}
+
+func (m *memParks) nextDue(context.Context) (time.Time, bool, error) {
+	var earliest time.Time
+	for _, h := range m.snapshot("") {
+		h.mu.Lock()
+		if !h.exhausted && !h.next.IsZero() && (earliest.IsZero() || h.next.Before(earliest)) {
+			earliest = h.next
+		}
+		h.mu.Unlock()
+	}
+	return earliest, !earliest.IsZero(), nil
+}
+
+func (m *memParks) stats(context.Context) (parkStats, error) {
+	var st parkStats
+	for _, h := range m.snapshot("") {
+		h.mu.Lock()
+		if len(h.events) > 0 {
+			st.streams++
+			st.events += len(h.events)
+			if h.exhausted {
+				st.exhausted++
+			}
+		}
+		h.mu.Unlock()
+	}
+	return st, nil
+}
+
+func (m *memParks) list(_ context.Context, tenant string) ([]Parked, error) {
+	holds := m.snapshot(tenant)
 	streams := slices.SortedFunc(maps.Keys(holds), func(a, b Stream) int {
 		return cmp.Compare(holds[a].seq, holds[b].seq)
 	})
@@ -171,7 +239,9 @@ func (m *memParks) list(_ context.Context, tenant string) ([]Parked, error) {
 		h := holds[s]
 		h.mu.Lock()
 		for _, e := range h.events {
-			out = append(out, e.Parked)
+			p := e.Parked
+			p.NextAttemptAt, p.Exhausted = h.next, h.exhausted
+			out = append(out, p)
 		}
 		h.mu.Unlock()
 	}

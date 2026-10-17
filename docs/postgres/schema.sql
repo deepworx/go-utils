@@ -156,14 +156,25 @@ $$;
 -- one has a cause, the ones held behind it have none. A released event is
 -- deleted; a discarded one stays with discarded_at and discarded_by, and
 -- the service owns its cleanup.
+-- The hold carries the auto-redrive schedule: redrives counts the failed
+-- auto-redrives, next_attempt_at is the next one (NULL when auto-redrive is
+-- off) and exhausted marks a spent schedule.
 -- ---------------------------------------------------------------------------
 CREATE TABLE public.parked_streams (
-    consumer   TEXT        NOT NULL,
-    tenant_id  TEXT        NOT NULL,
-    stream_id  UUID        NOT NULL,
-    parked_at  TIMESTAMPTZ NOT NULL,
+    consumer        TEXT        NOT NULL,
+    tenant_id       TEXT        NOT NULL,
+    stream_id       UUID        NOT NULL,
+    parked_at       TIMESTAMPTZ NOT NULL,
+    redrives        INT         NOT NULL DEFAULT 0,
+    next_attempt_at TIMESTAMPTZ NULL,
+    exhausted       BOOLEAN     NOT NULL DEFAULT false,
     PRIMARY KEY (consumer, tenant_id, stream_id)
 );
+
+-- The auto-redrives that come due.
+CREATE INDEX parked_streams_due_idx
+    ON public.parked_streams (consumer, next_attempt_at)
+    WHERE NOT exhausted;
 
 CREATE TABLE public.parked_events (
     consumer        TEXT        NOT NULL,
@@ -176,8 +187,6 @@ CREATE TABLE public.parked_events (
     cause           TEXT        NULL,
     attempts        INT         NOT NULL DEFAULT 0,
     parked_at       TIMESTAMPTZ NOT NULL,
-    next_attempt_at TIMESTAMPTZ NULL,
-    exhausted       BOOLEAN     NOT NULL DEFAULT false,
     discarded_at    TIMESTAMPTZ NULL,
     discarded_by    TEXT        NULL,
     PRIMARY KEY (consumer, event_id)

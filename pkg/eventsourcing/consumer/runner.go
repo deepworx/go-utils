@@ -29,7 +29,12 @@ func (c *Consumer) Run(ctx context.Context) error {
 		switch {
 		case err == nil:
 			stopGauges := c.inst.reportGauges(c.port.status)
+			stopLeased := func() {}
+			if c.opts.leased != nil {
+				stopLeased = c.opts.leased(leaseCtx)
+			}
 			c.runHeld(leaseCtx)
+			stopLeased()
 			stopGauges()
 			release()
 		case errors.Is(err, ErrRunning):
@@ -108,6 +113,21 @@ func (c *Consumer) Drain(ctx context.Context) error {
 	}
 	defer release()
 
+	if err := c.drainHeld(ctx); err != nil {
+		return err
+	}
+	if c.opts.drained == nil {
+		return nil
+	}
+	if err := c.opts.drained(ctx); err != nil {
+		return fmt.Errorf("drain %q: %w", c.name, err)
+	}
+	return nil
+}
+
+// drainHeld processes events up to the current head while the lease in ctx
+// is held.
+func (c *Consumer) drainHeld(ctx context.Context) error {
 	head, err := c.port.head(ctx)
 	if err != nil {
 		return fmt.Errorf("drain %q: head: %w", c.name, err)

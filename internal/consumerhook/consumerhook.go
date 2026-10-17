@@ -35,6 +35,12 @@ type ReactorOptions struct {
 	SeedAtHead bool
 	// DecodeFailed, when set, receives undecodable events.
 	DecodeFailed DecodeFailedFunc
+	// Leased, when set, is called by Run each time it takes the lease, with
+	// the lease ctx. Run calls the returned stop when the lease ends.
+	Leased func(ctx context.Context) (stop func())
+	// Drained, when set, is called by Drain once it has processed up to the
+	// head, still under the lease. Its error fails the Drain.
+	Drained func(ctx context.Context) error
 }
 
 // Changes sends and delivers the change payloads of one Runtime, for

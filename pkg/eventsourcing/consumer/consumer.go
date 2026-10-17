@@ -1,6 +1,7 @@
 package consumer
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -61,10 +62,12 @@ type options struct {
 	eventSpans     bool
 	tracerProvider trace.TracerProvider
 	meterProvider  metric.MeterProvider
-	// seedAtHead and decodeFailed are set by package reactor through
-	// internal/consumerhook.
+	// seedAtHead, decodeFailed, leased and drained are set by package
+	// reactor through internal/consumerhook.
 	seedAtHead   bool
 	decodeFailed consumerhook.DecodeFailedFunc
+	leased       func(ctx context.Context) (stop func())
+	drained      func(ctx context.Context) error
 }
 
 // WithBatchSize sets how many events one batch reads. The default is 100.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"maps"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -12,6 +13,9 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.opentelemetry.io/otel/attribute"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
 	"github.com/deepworx/go-utils/internal/pgtest"
 	"github.com/deepworx/go-utils/internal/reactortest"
@@ -142,6 +146,121 @@ func TestPgParkWriteFailureStops(t *testing.T) {
 	}
 	if got := calls.Load(); got != 2 {
 		t.Errorf("reactions = %d, want one per park attempt", got)
+	}
+}
+
+// Two Runtimes play two pods running the same Reactor. Only the lease
+// owner reports the park list gauges.
+func TestPgParkedGaugesOnlyFromLeaseOwner(t *testing.T) {
+	pool := pgtest.New(t)
+	codec := eventstore.NewCodec()
+	eventstore.Register[placed](codec)
+	store, err := eventstore.NewPgStore(eventstore.PgStoreConfig{Pool: pool, Codec: codec})
+	if err != nil {
+		t.Fatalf("NewPgStore: %v", err)
+	}
+	uow, err := eventstore.NewPgUnitOfWork(eventstore.PgUnitOfWorkConfig{UnitOfWork: postgres.NewUnitOfWork(pool)})
+	if err != nil {
+		t.Fatalf("NewPgUnitOfWork: %v", err)
+	}
+	orders := eventstore.NewRepository[orderID, order](eventstore.RepositoryConfig{Store: store, UnitOfWork: uow})
+	writer := ctxutil.WithClaims(ctxutil.WithTenantID(context.Background(), "t1"), ctxutil.Claims{UserID: "user-1"})
+	_, err = orders.Create(writer, orderID(uuid.Must(uuid.NewV7())), func(_ context.Context, o *order) error {
+		aggregate.Raise(o, placed{Note: "a"})
+		aggregate.Raise(o, placed{Note: "b"})
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	t.Cleanup(func() {
+		cancel()
+		wg.Wait()
+	})
+	var (
+		readers  []*sdkmetric.ManualReader
+		reactors []*reactor.Reactor
+	)
+	for range 2 {
+		reader := sdkmetric.NewManualReader()
+		r, err := reactor.New(newPgRuntime(t, pool, store), reactor.Config{
+			Name:    "owner",
+			StartAt: reactor.FromBeginning,
+			Handler: consumer.HandlerFunc(func(context.Context, eventstore.Envelope) error {
+				return consumer.Permanent(errors.New("down"))
+			}),
+		}, reactor.WithLogger(slog.New(slog.DiscardHandler)),
+			reactor.WithMeterProvider(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))))
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		readers = append(readers, reader)
+		reactors = append(reactors, r)
+		wg.Go(func() { _ = r.Consumer().Run(ctx) })
+	}
+	waitParked(t, reactors[0], 2)
+
+	want := attribute.NewSet(attribute.String("eventsourcing.consumer", "owner"))
+	wantGauges := map[string]int64{
+		"eventsourcing.reactor.parked.streams":   1,
+		"eventsourcing.reactor.parked.events":    2,
+		"eventsourcing.reactor.parked.exhausted": 0,
+	}
+	owners := 0
+	for i, reader := range readers {
+		var rm metricdata.ResourceMetrics
+		if err := reader.Collect(context.Background(), &rm); err != nil {
+			t.Fatalf("pod %d: collect: %v", i, err)
+		}
+		got := make(map[string]int64)
+		for _, sm := range rm.ScopeMetrics {
+			for _, m := range sm.Metrics {
+				if _, ok := wantGauges[m.Name]; !ok {
+					continue
+				}
+				g, ok := m.Data.(metricdata.Gauge[int64])
+				if !ok || len(g.DataPoints) == 0 {
+					continue
+				}
+				if len(g.DataPoints) != 1 || !g.DataPoints[0].Attributes.Equals(&want) {
+					t.Errorf("pod %d: %s = %+v, want one point labelled %v", i, m.Name, g.DataPoints, want)
+				}
+				got[m.Name] = g.DataPoints[0].Value
+			}
+		}
+		if len(got) == 0 {
+			continue
+		}
+		owners++
+		if !maps.Equal(got, wantGauges) {
+			t.Errorf("pod %d: gauges = %v, want %v", i, got, wantGauges)
+		}
+	}
+	if owners != 1 {
+		t.Errorf("%d pods report the park list gauges, want exactly 1", owners)
+	}
+}
+
+// waitParked polls r's Status until events are parked or the test times
+// out.
+func waitParked(t *testing.T, r *reactor.Reactor, events int) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		st, err := r.Status(context.Background())
+		if err != nil {
+			t.Fatalf("Status: %v", err)
+		}
+		if st.ParkedEvents == events && st.Pending == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("Status = %+v, want %d parked events", st, events)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

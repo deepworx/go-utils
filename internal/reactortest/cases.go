@@ -40,6 +40,11 @@ func cases(s suite) []testCase {
 		{"RedriveStopsAtFirstFailure", s.redriveStopsAtFirstFailure},
 		{"Discard", s.discard},
 		{"ParkTwiceIsNoop", s.parkTwiceIsNoop},
+		{"AutoRedriveReleasesAtFirstStep", s.autoRedriveReleases},
+		{"AutoRedriveExhausts", s.autoRedriveExhausts},
+		{"NoRedriveSteps", s.noRedriveSteps},
+		{"StatusCountsParked", s.statusCountsParked},
+		{"ConcurrentRedrives", s.concurrentRedrives},
 	}
 }
 
@@ -52,6 +57,7 @@ type harness struct {
 	backend   Backend
 	orders    *eventstore.Repository[orderID, order, *order]
 	shipments *eventstore.Repository[shipmentID, shipment, *shipment]
+	clock     *clock
 }
 
 func (s suite) setup(t *testing.T) harness {
@@ -63,6 +69,7 @@ func (s suite) setup(t *testing.T) harness {
 		backend:   b,
 		orders:    eventstore.NewRepository[orderID, order](cfg),
 		shipments: eventstore.NewRepository[shipmentID, shipment](cfg),
+		clock:     &clock{},
 	}
 }
 
@@ -106,7 +113,7 @@ func (h harness) newReactor(cfg reactor.Config, opts ...reactor.Option) *reactor
 	if cfg.StartAt == 0 {
 		cfg.StartAt = reactor.FromBeginning
 	}
-	opts = append([]reactor.Option{fastRetry, quiet}, opts...)
+	opts = append([]reactor.Option{fastRetry, quiet, reactor.WithClock(h.clock.now)}, opts...)
 	r, err := reactor.New(h.backend.Runtime, cfg, opts...)
 	if err != nil {
 		h.t.Fatalf("reactor.New: %v", err)
@@ -121,7 +128,7 @@ var (
 
 func (h harness) drain(r *reactor.Reactor) {
 	h.t.Helper()
-	if err := r.Consumer().Drain(context.Background()); err != nil {
+	if err := r.Drain(context.Background()); err != nil {
 		h.t.Fatalf("Drain: %v", err)
 	}
 }
