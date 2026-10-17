@@ -2,9 +2,9 @@ package eventstore
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"hash/fnv"
+	"strconv"
 
 	"github.com/google/uuid"
 
@@ -32,12 +32,12 @@ type PgUnitOfWork struct {
 	schema string
 }
 
-// NewPgUnitOfWork returns a PgUnitOfWork. It fails without UnitOfWork, and
-// with notify.ErrInvalidChannel when Schema makes the derived channel name
-// too long.
+// NewPgUnitOfWork returns a PgUnitOfWork. It fails with ErrInvalidConfig
+// without UnitOfWork, and with notify.ErrInvalidChannel when Schema makes
+// the derived channel name too long.
 func NewPgUnitOfWork(cfg PgUnitOfWorkConfig) (*PgUnitOfWork, error) {
 	if cfg.UnitOfWork == nil {
-		return nil, errors.New("eventstore: NewPgUnitOfWork: UnitOfWork is required")
+		return nil, fmt.Errorf("eventstore: NewPgUnitOfWork: UnitOfWork is required: %w", ErrInvalidConfig)
 	}
 	schema, err := checkSchema(cfg.Schema)
 	if err != nil {
@@ -46,19 +46,32 @@ func NewPgUnitOfWork(cfg PgUnitOfWorkConfig) (*PgUnitOfWork, error) {
 	return &PgUnitOfWork{uow: cfg.UnitOfWork, schema: schema}, nil
 }
 
+// holdStream takes the stream lock $1 and records the held Stream $2 in a
+// transaction-local setting, in one round trip. It returns the Stream the
+// database transaction already held, or $2 when it held none.
+const holdStream = `SELECT coalesce(nullif(current_setting('eventsourcing.command_stream', true), ''),
+		set_config('eventsourcing.command_stream', $2, true))
+	FROM pg_advisory_xact_lock($1)`
+
 // Execute opens a Command transaction for stream, waiting for its stream
 // lock until ctx ends. An open Postgres transaction in ctx is joined, and
-// the lock is then held until that transaction ends.
+// the lock is then held until that transaction ends. One database
+// transaction holds one Stream: joining one that already holds another
+// Stream fails with ErrStreamMismatch.
 func (u *PgUnitOfWork) Execute(ctx context.Context, stream uuid.UUID, fn func(ctx context.Context) error) error {
 	ctx, tx, err := openCommandTx(ctx, stream)
 	if err != nil {
 		return err
 	}
+	ref := streamRef{schema: u.schema, tenant: tx.tenant, stream: stream}
 	return u.uow.Execute(ctx, func(ctx context.Context) error {
-		pgTx := postgres.TxFromContext(ctx)
-		key := streamLockKey(u.schema, tx.tenant, stream)
-		if _, err := pgTx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", key); err != nil {
+		var held string
+		err := postgres.TxFromContext(ctx).QueryRow(ctx, holdStream, ref.lockKey(), ref.String()).Scan(&held)
+		if err != nil {
 			return fmt.Errorf("lock stream %s: %w", stream, err)
+		}
+		if held != ref.String() {
+			return fmt.Errorf("database transaction holds %s, got %s: %w", held, ref, ErrStreamMismatch)
 		}
 		return fn(ctx)
 	})
@@ -69,11 +82,23 @@ func (u *PgUnitOfWork) Within(ctx context.Context, stream uuid.UUID, fn func(ctx
 	return executor(u.Execute).within(ctx, stream, fn)
 }
 
-// streamLockKey is fnv64a(schema ‖ 0x00 ‖ tenant ‖ 0x00 ‖ stream), with
-// stream in its canonical text form, as a bigint advisory lock key.
-func streamLockKey(schema, tenant string, stream uuid.UUID) int64 {
+// streamRef names a Stream of one Tenant in one schema.
+type streamRef struct {
+	schema string
+	tenant string
+	stream uuid.UUID
+}
+
+// String renders r unambiguously, as the held Stream of a transaction.
+func (r streamRef) String() string {
+	return strconv.Quote(r.schema) + "/" + strconv.Quote(r.tenant) + "/" + r.stream.String()
+}
+
+// lockKey is fnv64a(schema ‖ 0x00 ‖ tenant ‖ 0x00 ‖ stream), with stream in
+// its canonical text form, as a bigint advisory lock key.
+func (r streamRef) lockKey() int64 {
 	h := fnv.New64a()
-	for i, part := range []string{schema, tenant, stream.String()} {
+	for i, part := range []string{r.schema, r.tenant, r.stream.String()} {
 		if i > 0 {
 			_, _ = h.Write([]byte{0})
 		}

@@ -31,6 +31,18 @@ type commandTx struct {
 	stream uuid.UUID
 	// correlation is the Correlation used when ctx carries none.
 	correlation string
+	// txn is the in-memory transaction the Command transaction runs in,
+	// shared by every Command transaction joined into it; nil in Postgres.
+	txn any
+}
+
+// pendingKey keys the in-memory appends of tx: those of one transaction are
+// pending together and visible to every Command transaction joined into it.
+func (tx *commandTx) pendingKey() any {
+	if tx.txn != nil {
+		return tx.txn
+	}
+	return tx
 }
 
 type commandTxKey struct{}

@@ -37,4 +37,9 @@ var (
 	// (ctxutil.WithActor) nor a Claims.UserID outside the reserved
 	// "system:" prefix.
 	ErrNoActor = errors.New("eventstore: no actor in context")
+	// ErrInvalidConfig reports a constructor Config that misses a required
+	// dependency. Constructors without an error result panic instead.
+	ErrInvalidConfig = errors.New("eventstore: invalid config")
+	// ErrInvalidVersion reports a requested Aggregate version below 1.
+	ErrInvalidVersion = errors.New("eventstore: invalid version")
 )

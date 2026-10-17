@@ -30,6 +30,7 @@ func (u *InMemoryUnitOfWork) Execute(ctx context.Context, fn func(ctx context.Co
 		if !committed {
 			tx.rollback()
 		}
+		tx.complete()
 	}()
 	if err := fn(context.WithValue(ctx, memTxKey{}, tx)); err != nil {
 		return err
@@ -63,12 +64,37 @@ func OnRollback(ctx context.Context, undo func()) {
 	tx.onRollback(undo)
 }
 
+// OnComplete registers done to run once the in-memory transaction in ctx
+// has ended, after its staged writes were applied or its undos ran, such as
+// releasing a lock that must outlive the commit. Callbacks run in
+// registration order. Outside a transaction, done runs immediately.
+func OnComplete(ctx context.Context, done func()) {
+	tx, ok := ctx.Value(memTxKey{}).(*memTx)
+	if !ok {
+		done()
+		return
+	}
+	tx.onComplete(done)
+}
+
+// InMemoryTransaction returns a comparable token that identifies the
+// in-memory transaction in ctx, the same for every Execute that joins it.
+// It reports false outside one.
+func InMemoryTransaction(ctx context.Context) (any, bool) {
+	tx, ok := ctx.Value(memTxKey{}).(*memTx)
+	if !ok {
+		return nil, false
+	}
+	return tx, true
+}
+
 type memTxKey struct{}
 
 type memTx struct {
-	mu     sync.Mutex
-	staged []func()
-	undos  []func()
+	mu        sync.Mutex
+	staged    []func()
+	undos     []func()
+	completes []func()
 }
 
 func (t *memTx) stage(apply func()) {
@@ -81,6 +107,12 @@ func (t *memTx) onRollback(undo func()) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.undos = append(t.undos, undo)
+}
+
+func (t *memTx) onComplete(done func()) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.completes = append(t.completes, done)
 }
 
 func (t *memTx) commit() {
@@ -102,6 +134,17 @@ func (t *memTx) rollback() {
 
 	for i := len(undos) - 1; i >= 0; i-- {
 		undos[i]()
+	}
+}
+
+func (t *memTx) complete() {
+	t.mu.Lock()
+	completes := t.completes
+	t.completes = nil
+	t.mu.Unlock()
+
+	for _, done := range completes {
+		done()
 	}
 }
 

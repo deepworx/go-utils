@@ -11,6 +11,7 @@ import (
 	"github.com/deepworx/go-utils/internal/eventstoretest"
 	"github.com/deepworx/go-utils/pkg/ctxutil"
 	"github.com/deepworx/go-utils/pkg/eventsourcing/eventstore"
+	"github.com/deepworx/go-utils/pkg/postgres"
 	"github.com/deepworx/go-utils/pkg/postgres/guard"
 	"github.com/deepworx/go-utils/pkg/postgres/numbering"
 )
@@ -32,6 +33,7 @@ func TestInMemoryContract(t *testing.T) {
 			UnitOfWork: eventstore.NewInMemoryUnitOfWork(),
 			Guard:      guard.NewInMemoryStore(),
 			Numbering:  numbering.NewInMemoryStore(),
+			Outer:      postgres.NewInMemoryUnitOfWork().Execute,
 		}
 	})
 }

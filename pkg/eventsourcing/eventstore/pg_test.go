@@ -38,6 +38,7 @@ func TestPgContract(t *testing.T) {
 			UnitOfWork: newPgUnitOfWork(t, pool, ""),
 			Guard:      guard.NewPgStore(pool),
 			Numbering:  numbering.NewPgStore(pool),
+			Outer:      postgres.NewUnitOfWork(pool).Execute,
 		}
 	})
 }

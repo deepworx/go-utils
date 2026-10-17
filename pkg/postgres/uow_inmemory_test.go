@@ -198,3 +198,66 @@ func TestInMemoryUnitOfWorkUndoesOnPanic(t *testing.T) {
 		panic("boom")
 	})
 }
+
+func TestInMemoryUnitOfWorkOnComplete(t *testing.T) {
+	t.Parallel()
+
+	errBoom := errors.New("boom")
+	tests := []struct {
+		name string
+		fail error
+		want []string
+	}{
+		{"after the staged writes on commit", nil, []string{"apply", "complete"}},
+		{"after the undos on rollback", errBoom, []string{"undo", "complete"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var got []string
+			record := func(s string) func() { return func() { got = append(got, s) } }
+			_ = NewInMemoryUnitOfWork().Execute(context.Background(), func(ctx context.Context) error {
+				OnComplete(ctx, record("complete"))
+				Stage(ctx, record("apply"))
+				OnRollback(ctx, record("undo"))
+				return tt.fail
+			})
+			if !slices.Equal(got, tt.want) {
+				t.Fatalf("got %v, want %v", got, tt.want)
+			}
+		})
+	}
+
+	t.Run("outside a transaction runs at once", func(t *testing.T) {
+		t.Parallel()
+		ran := false
+		OnComplete(context.Background(), func() { ran = true })
+		if !ran {
+			t.Fatal("OnComplete did not run outside a transaction")
+		}
+	})
+}
+
+func TestInMemoryTransactionIdentifiesTheOuterTransaction(t *testing.T) {
+	t.Parallel()
+
+	if _, ok := InMemoryTransaction(context.Background()); ok {
+		t.Fatal("InMemoryTransaction outside a transaction reported one")
+	}
+	uow := NewInMemoryUnitOfWork()
+	var outer, joined, other any
+	_ = uow.Execute(context.Background(), func(ctx context.Context) error {
+		outer, _ = InMemoryTransaction(ctx)
+		return uow.Execute(ctx, func(ctx context.Context) error {
+			joined, _ = InMemoryTransaction(ctx)
+			return nil
+		})
+	})
+	_ = uow.Execute(context.Background(), func(ctx context.Context) error {
+		other, _ = InMemoryTransaction(ctx)
+		return nil
+	})
+	if outer == nil || outer != joined || outer == other {
+		t.Fatalf("outer %v joined %v other %v, want outer == joined != other", outer, joined, other)
+	}
+}

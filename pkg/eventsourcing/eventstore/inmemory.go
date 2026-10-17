@@ -23,6 +23,8 @@ type InMemoryStore struct {
 }
 
 // NewInMemoryStore creates an empty InMemoryStore that encodes with codec.
+// A nil codec is a programming error, so it panics instead of returning
+// ErrInvalidConfig.
 func NewInMemoryStore(codec *Codec, opts ...StoreOption) *InMemoryStore {
 	if codec == nil {
 		panic("eventstore: NewInMemoryStore: nil codec")
@@ -34,7 +36,7 @@ func NewInMemoryStore(codec *Codec, opts ...StoreOption) *InMemoryStore {
 		log: &memLog{
 			streams: make(map[streamKey][]memRecord),
 			byType:  make(map[string][]memRecord),
-			pending: make(map[*commandTx]*memPending),
+			pending: make(map[any]*memPending),
 			changed: make(chan struct{}),
 		},
 	}
@@ -62,8 +64,8 @@ type memLog struct {
 	byType  map[string][]memRecord
 	lastXID uint64
 	lastPos int64
-	// pending holds the appends of open Command transactions.
-	pending map[*commandTx]*memPending
+	// pending holds the appends of open transactions by commandTx.pendingKey.
+	pending map[any]*memPending
 	// changed is closed and replaced whenever a commit or rollback may have
 	// made more events visible.
 	changed chan struct{}
@@ -99,7 +101,7 @@ func (l *memLog) stream(ctx context.Context, k streamKey) []memRecord {
 	defer l.mu.Unlock()
 	records := slices.Clone(l.streams[k])
 	if tx, ok := commandTxFrom(ctx); ok && tx.tenant == k.tenant && tx.stream == k.stream {
-		if p := l.pending[tx]; p != nil {
+		if p := l.pending[tx.pendingKey()]; p != nil {
 			records = append(records, p.records...)
 		}
 	}
@@ -167,7 +169,7 @@ func (l *memLog) stage(in stageInput) (last Cursor, opened bool, err error) {
 	defer l.mu.Unlock()
 
 	k := streamKey{tenant: in.tx.tenant, stream: in.tx.stream}
-	p := l.pending[in.tx]
+	p := l.pending[in.tx.pendingKey()]
 	version := len(l.streams[k])
 	if p != nil {
 		version += len(p.records)
@@ -178,7 +180,7 @@ func (l *memLog) stage(in stageInput) (last Cursor, opened bool, err error) {
 	if p == nil {
 		l.lastXID++
 		p = &memPending{xid: l.lastXID}
-		l.pending[in.tx] = p
+		l.pending[in.tx.pendingKey()] = p
 		opened = true
 	}
 	for i, payload := range in.payloads {
@@ -197,8 +199,8 @@ func (l *memLog) stage(in stageInput) (last Cursor, opened bool, err error) {
 func (l *memLog) commit(tx *commandTx) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	p := l.pending[tx]
-	delete(l.pending, tx)
+	p := l.pending[tx.pendingKey()]
+	delete(l.pending, tx.pendingKey())
 	if p == nil {
 		return
 	}
@@ -221,7 +223,7 @@ func compareRecord(r memRecord, c Cursor) int { return r.env.Cursor.Compare(c) }
 func (l *memLog) discard(tx *commandTx) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	delete(l.pending, tx)
+	delete(l.pending, tx.pendingKey())
 	l.broadcast()
 }
 
@@ -239,6 +241,9 @@ type InMemoryUnitOfWork struct {
 	tx    *postgres.InMemoryUnitOfWork
 	mu    sync.Mutex
 	locks map[streamKey]*streamLock
+	// held is the Stream each open in-memory transaction holds, by
+	// postgres.InMemoryTransaction.
+	held map[any]streamKey
 }
 
 type streamLock struct {
@@ -251,24 +256,56 @@ func NewInMemoryUnitOfWork() *InMemoryUnitOfWork {
 	return &InMemoryUnitOfWork{
 		tx:    postgres.NewInMemoryUnitOfWork(),
 		locks: make(map[streamKey]*streamLock),
+		held:  make(map[any]streamKey),
 	}
 }
 
 // Execute opens a Command transaction for stream, waiting until no other
 // one holds the same (Tenant, Stream) or ctx ends. An open
-// postgres.InMemoryUnitOfWork transaction in ctx is joined, which defers
-// the commit to it but releases the stream lock when Execute returns.
+// postgres.InMemoryUnitOfWork transaction in ctx is joined: the stream lock
+// is then held until that transaction ends, and joining one that already
+// holds another Stream fails with ErrStreamMismatch.
 func (u *InMemoryUnitOfWork) Execute(ctx context.Context, stream uuid.UUID, fn func(ctx context.Context) error) error {
 	ctx, tx, err := openCommandTx(ctx, stream)
 	if err != nil {
 		return err
 	}
-	unlock, err := u.lock(ctx, streamKey{tenant: tx.tenant, stream: stream})
+	return u.tx.Execute(ctx, func(ctx context.Context) error {
+		tx.txn, _ = postgres.InMemoryTransaction(ctx)
+		if err := u.hold(ctx, streamKey{tenant: tx.tenant, stream: stream}); err != nil {
+			return err
+		}
+		return fn(ctx)
+	})
+}
+
+// hold locks k for the in-memory transaction in ctx until it ends. A
+// transaction that already holds k keeps it.
+func (u *InMemoryUnitOfWork) hold(ctx context.Context, k streamKey) error {
+	txn, _ := postgres.InMemoryTransaction(ctx)
+	u.mu.Lock()
+	held, ok := u.held[txn]
+	u.mu.Unlock()
+	switch {
+	case ok && held != k:
+		return fmt.Errorf("transaction holds %s/%s, got %s/%s: %w", held.tenant, held.stream, k.tenant, k.stream, ErrStreamMismatch)
+	case ok:
+		return nil
+	}
+	unlock, err := u.lock(ctx, k)
 	if err != nil {
 		return err
 	}
-	defer unlock()
-	return u.tx.Execute(ctx, fn)
+	u.mu.Lock()
+	u.held[txn] = k
+	u.mu.Unlock()
+	postgres.OnComplete(ctx, func() {
+		u.mu.Lock()
+		delete(u.held, txn)
+		u.mu.Unlock()
+		unlock()
+	})
+	return nil
 }
 
 // Within joins the open Command transaction for stream, or opens one.
