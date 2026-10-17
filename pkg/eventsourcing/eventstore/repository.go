@@ -2,7 +2,6 @@ package eventstore
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"github.com/google/uuid"
@@ -37,8 +36,9 @@ type Repository[I aggregate.ID, A any, P interface {
 	inst       instruments
 }
 
-// NewRepository returns a Repository for A. It panics if cfg lacks a Store
-// or UnitOfWork.
+// NewRepository returns a Repository for A. A missing Store or UnitOfWork
+// is a programming error, so it panics instead of returning
+// ErrInvalidConfig.
 //
 // Create and Update record an INTERNAL Command span with a PRODUCER send
 // span whose traceparent is stored on the appended events. Loads and
@@ -71,7 +71,7 @@ func NewRepository[I aggregate.ID, A any, P interface {
 // with ErrStreamMismatch.
 func (r *Repository[I, A, P]) Create(ctx context.Context, id I, fn func(ctx context.Context, agg P) error) (CommandResult, error) {
 	var res CommandResult
-	err := r.command(ctx, telemetry.SpanCreate(r.streamType), id, func(ctx context.Context) error {
+	create := func(ctx context.Context) error {
 		envs, err := r.loadEnvelopes(ctx, loadInput{stream: uuid.UUID(id)})
 		if err != nil {
 			return err
@@ -85,7 +85,8 @@ func (r *Repository[I, A, P]) Create(ctx context.Context, id I, fn func(ctx cont
 		}
 		res, err = r.saveCommand(ctx, agg)
 		return err
-	})
+	}
+	err := r.command(ctx, commandCall[I]{span: telemetry.SpanCreate(r.streamType), id: id, fn: create})
 	if err != nil {
 		return CommandResult{}, fmt.Errorf("create %s %s: %w", r.streamType, uuid.UUID(id), err)
 	}
@@ -117,7 +118,7 @@ func (r *Repository[I, A, P]) Update(ctx context.Context, id I, fn func(ctx cont
 		opt(&o)
 	}
 	var res CommandResult
-	err := r.command(ctx, telemetry.SpanUpdate(r.streamType), id, func(ctx context.Context) error {
+	update := func(ctx context.Context) error {
 		agg, err := r.load(ctx, loadInput{stream: uuid.UUID(id)})
 		if err != nil {
 			return err
@@ -130,7 +131,8 @@ func (r *Repository[I, A, P]) Update(ctx context.Context, id I, fn func(ctx cont
 		}
 		res, err = r.saveCommand(ctx, agg)
 		return err
-	})
+	}
+	err := r.command(ctx, commandCall[I]{span: telemetry.SpanUpdate(r.streamType), id: id, fn: update})
 	if err != nil {
 		return CommandResult{}, fmt.Errorf("update %s %s: %w", r.streamType, uuid.UUID(id), err)
 	}
@@ -148,8 +150,9 @@ func (r *Repository[I, A, P]) Load(ctx context.Context, id I) (P, error) {
 	return agg, nil
 }
 
-// LoadAt rebuilds the Aggregate as it was at version (>= 1). It fails with
-// ErrNotFound when the Stream never reached version.
+// LoadAt rebuilds the Aggregate as it was at version. It fails with
+// ErrInvalidVersion for a version below 1 and with ErrNotFound when the
+// Stream never reached version.
 func (r *Repository[I, A, P]) LoadAt(ctx context.Context, id I, version int) (P, error) {
 	agg, err := r.loadAt(ctx, id, version)
 	if err != nil {
@@ -160,7 +163,7 @@ func (r *Repository[I, A, P]) LoadAt(ctx context.Context, id I, version int) (P,
 
 func (r *Repository[I, A, P]) loadAt(ctx context.Context, id I, version int) (P, error) {
 	if version < 1 {
-		return nil, errors.New("version must be at least 1")
+		return nil, ErrInvalidVersion
 	}
 	agg, err := r.load(ctx, loadInput{stream: uuid.UUID(id), upTo: version})
 	if err != nil {
@@ -195,13 +198,21 @@ func (r *Repository[I, A, P]) Save(ctx context.Context, agg P) (CommandResult, e
 	return res, nil
 }
 
-// command runs fn in the Command transaction for id, traced as the
-// Command span name.
-func (r *Repository[I, A, P]) command(ctx context.Context, name string, id I, fn func(ctx context.Context) error) error {
+// commandCall is one Command: fn runs in the Command transaction for id,
+// traced as the Command span named span.
+type commandCall[I aggregate.ID] struct {
+	span string
+	id   I
+	fn   func(ctx context.Context) error
+}
+
+// command runs call in its Command transaction.
+func (r *Repository[I, A, P]) command(ctx context.Context, call commandCall[I]) error {
 	tenant, _ := ctxutil.TenantID(ctx)
-	cmd := commandInput{name: name, tenant: tenant, stream: uuid.UUID(id).String()}
+	stream := uuid.UUID(call.id)
+	cmd := commandInput{name: call.span, tenant: tenant, stream: stream.String()}
 	return r.inst.command(ctx, cmd, func(ctx context.Context) error {
-		return r.uow.Within(ctx, uuid.UUID(id), fn)
+		return r.uow.Within(ctx, stream, call.fn)
 	})
 }
 
@@ -258,7 +269,11 @@ func (r *Repository[I, A, P]) load(ctx context.Context, in loadInput) (P, error)
 	}
 	agg := r.allocate(I(in.stream))
 	for _, env := range envs {
-		aggregateaccess.Replay[I](agg, env.Event.(aggregate.Event))
+		e, ok := env.Event.(aggregate.Event)
+		if !ok {
+			return nil, fmt.Errorf("replay position %d: %T is no aggregate.Event: %w", env.StreamPosition, env.Event, ErrUnknownEventType)
+		}
+		aggregateaccess.Replay[I](agg, e)
 	}
 	return agg, nil
 }

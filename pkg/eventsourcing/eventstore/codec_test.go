@@ -320,7 +320,7 @@ func TestUpcastReturnsCurrentShapeForTooling(t *testing.T) {
 	c := eventstore.NewCodec()
 	registerTaskTitled(c)
 
-	got, err := c.Upcast("task.titled", 1, []byte(`{"name":"ship"}`))
+	got, err := c.Upcast(eventstore.Payload{EventType: "task.titled", SchemaVersion: 1, Data: []byte(`{"name":"ship"}`)})
 	if err != nil {
 		t.Fatalf("Upcast: %v", err)
 	}

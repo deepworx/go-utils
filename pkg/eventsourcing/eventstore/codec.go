@@ -107,7 +107,7 @@ func (c *Codec) Encode(e aggregate.Event) (Payload, error) {
 // registered event type. Decoding is lenient: unknown fields are ignored and
 // missing fields stay zero.
 func (c *Codec) Decode(p Payload) (aggregate.Event, error) {
-	reg, data, err := c.upcast(p.EventType, p.SchemaVersion, p.Data)
+	reg, data, err := c.upcast(p)
 	if err != nil {
 		return nil, fmt.Errorf("decode: %w", err)
 	}
@@ -118,36 +118,37 @@ func (c *Codec) Decode(p Payload) (aggregate.Event, error) {
 	return e, nil
 }
 
-// Upcast lifts a stored payload of eventType from version to the current
-// Schema version and returns its JSON, so tooling sees today's shape.
+// Upcast lifts a stored payload from its Schema version to the current one
+// and returns its JSON, so tooling sees today's shape.
 //
 // It fails with ErrUnknownEventType, ErrInvalidSchemaVersion for a version
 // below 1, ErrNewerSchemaVersion for a version above the registered one, or
 // the wrapped error of a failing Upcaster.
-func (c *Codec) Upcast(eventType string, version int, data []byte) ([]byte, error) {
-	_, data, err := c.upcast(eventType, version, data)
+func (c *Codec) Upcast(p Payload) ([]byte, error) {
+	_, data, err := c.upcast(p)
 	if err != nil {
 		return nil, fmt.Errorf("upcast: %w", err)
 	}
 	return data, nil
 }
 
-func (c *Codec) upcast(eventType string, version int, data []byte) (registration, []byte, error) {
-	reg, err := c.registration(eventType)
+func (c *Codec) upcast(p Payload) (registration, []byte, error) {
+	reg, err := c.registration(p.EventType)
 	if err != nil {
 		return registration{}, nil, err
 	}
 	current := reg.schemaVersion()
 	switch {
-	case version < 1:
-		return registration{}, nil, fmt.Errorf("%q v%d: %w", eventType, version, ErrInvalidSchemaVersion)
-	case version > current:
-		return registration{}, nil, fmt.Errorf("%q v%d, registered v%d: %w", eventType, version, current, ErrNewerSchemaVersion)
+	case p.SchemaVersion < 1:
+		return registration{}, nil, fmt.Errorf("%q v%d: %w", p.EventType, p.SchemaVersion, ErrInvalidSchemaVersion)
+	case p.SchemaVersion > current:
+		return registration{}, nil, fmt.Errorf("%q v%d, registered v%d: %w", p.EventType, p.SchemaVersion, current, ErrNewerSchemaVersion)
 	}
-	for v := version; v < current; v++ {
+	data := p.Data
+	for v := p.SchemaVersion; v < current; v++ {
 		data, err = reg.upcasters[v-1](data)
 		if err != nil {
-			return registration{}, nil, fmt.Errorf("%q v%d to v%d: %w", eventType, v, v+1, err)
+			return registration{}, nil, fmt.Errorf("%q v%d to v%d: %w", p.EventType, v, v+1, err)
 		}
 	}
 	return reg, data, nil

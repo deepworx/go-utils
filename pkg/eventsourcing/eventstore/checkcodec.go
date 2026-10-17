@@ -35,13 +35,20 @@ func CheckCodec(t testing.TB, codec *Codec) {
 		for _, path := range untaggedFields(reg.typ) {
 			t.Errorf("CheckCodec %q: exported field %s has no json tag", eventType, path)
 		}
-		checkRoundTrip(t, codec, eventType, reg.typ)
+		codec.checkRoundTrip(t, roundTrip{eventType: eventType, typ: reg.typ})
 	}
 }
 
-func checkRoundTrip(t testing.TB, codec *Codec, eventType string, typ reflect.Type) {
+// roundTrip is a registered event type and its Go type.
+type roundTrip struct {
+	eventType string
+	typ       reflect.Type
+}
+
+func (c *Codec) checkRoundTrip(t testing.TB, in roundTrip) {
 	t.Helper()
 
+	codec, eventType, typ := c, in.eventType, in.typ
 	sample := reflect.New(typ).Elem()
 	fillSample(sample, 0)
 	event, ok := sample.Interface().(aggregate.Event)

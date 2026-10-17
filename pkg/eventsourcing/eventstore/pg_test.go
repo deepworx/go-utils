@@ -147,6 +147,36 @@ func TestPgNonPublicSchemaUsesDerivedNames(t *testing.T) {
 	})
 }
 
+func TestPgConstructorsRejectMissingDependencies(t *testing.T) {
+	t.Parallel()
+	pool := &pgxpool.Pool{}
+	tests := []struct {
+		name string
+		new  func() error
+	}{
+		{"store without pool", func() error {
+			_, err := eventstore.NewPgStore(eventstore.PgStoreConfig{Codec: eventstore.NewCodec()})
+			return err
+		}},
+		{"store without codec", func() error {
+			_, err := eventstore.NewPgStore(eventstore.PgStoreConfig{Pool: pool})
+			return err
+		}},
+		{"unit of work without postgres unit of work", func() error {
+			_, err := eventstore.NewPgUnitOfWork(eventstore.PgUnitOfWorkConfig{})
+			return err
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if err := tt.new(); !errors.Is(err, eventstore.ErrInvalidConfig) {
+				t.Errorf("err = %v, want ErrInvalidConfig", err)
+			}
+		})
+	}
+}
+
 func TestPgConstructorsRejectSchemaWithTooLongChannel(t *testing.T) {
 	t.Parallel()
 	long := strings.Repeat("s", 57) // "<schema>.events" exceeds 63 bytes
