@@ -7,9 +7,9 @@ var (
 	// empty Source, Key or Type.
 	ErrInvalidMessage = errors.New("inbox: invalid message")
 
-	// ErrInvalidConfig is returned by NewWorker for a Config without a Source
-	// or Handle.
-	ErrInvalidConfig = errors.New("inbox: invalid worker config")
+	// ErrInvalidConfig is returned by NewStore without a pool and by
+	// NewWorker without a Store, Source or Handle.
+	ErrInvalidConfig = errors.New("inbox: invalid config")
 
 	// ErrRunning is returned by Run and Drain while another Run or Drain of
 	// the same Worker is active.

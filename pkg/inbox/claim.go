@@ -81,6 +81,53 @@ func (s *Store) claim(ctx context.Context, in claimInput) ([]claimed, error) {
 	return out, nil
 }
 
+// expiredClaimError is the error stored on a message Parked because the
+// claim of its last attempt expired without a settle.
+const expiredClaimError = "inbox: last attempt never settled (claim expired)"
+
+type parkExpiredInput struct {
+	Source string
+	// MaxAttempts is the number of attempts a Worker makes before it Parks.
+	MaxAttempts int
+}
+
+// parkExpired Parks the due pending messages of in.Source whose last
+// attempt was claimed but never settled, as when the handler took the
+// process down, so they are not retried forever. It returns how many it
+// Parked.
+func (s *Store) parkExpired(ctx context.Context, in parkExpiredInput) (int64, error) {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE `+s.table+`
+		SET status = 'parked', error = $4, claimed_until = NULL
+		WHERE id IN (
+			SELECT id FROM `+s.table+`
+			WHERE source = $1 AND status = 'pending' AND next_attempt_at <= $2 AND attempts >= $3
+			FOR UPDATE SKIP LOCKED
+		)`,
+		in.Source, s.now(), in.MaxAttempts, expiredClaimError,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("inbox: park expired claims of %s: %w", in.Source, err)
+	}
+	return tag.RowsAffected(), nil
+}
+
+// release hands a claimed message back without counting the attempt, for
+// a Worker that stops before its handler finished. It is fenced like
+// settle and reports whether the row was updated.
+func (s *Store) release(ctx context.Context, c claimed) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE `+s.table+`
+		SET attempts = GREATEST(attempts - 1, 0), next_attempt_at = $3, claimed_until = NULL
+		WHERE id = $1 AND claim_generation = $2 AND status = 'pending'`,
+		c.ID, c.generation, s.now(),
+	)
+	if err != nil {
+		return false, fmt.Errorf("inbox: release message %d: %w", c.ID, err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
 // settlement is the outcome of one claimed attempt.
 type settlement struct {
 	ID         int64

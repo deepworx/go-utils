@@ -292,7 +292,7 @@ CREATE FUNCTION public.inbox_messages_notify() RETURNS trigger
     LANGUAGE plpgsql AS
 $$
 BEGIN
-    PERFORM pg_notify('public.inbox', NEW.source);
+    PERFORM pg_notify(TG_TABLE_SCHEMA || '.inbox', NEW.source);
     RETURN NULL;
 END
 $$;
