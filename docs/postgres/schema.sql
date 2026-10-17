@@ -19,9 +19,47 @@ END
 $$;
 
 -- ---------------------------------------------------------------------------
--- inbox
+-- pkg/postgres/guard: tenant-scoped uniqueness rules.
 -- ---------------------------------------------------------------------------
+CREATE TABLE public.guards (
+    tenant_id  TEXT        NOT NULL,
+    rule       TEXT        NOT NULL,
+    key        TEXT        NOT NULL,
+    claimed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (tenant_id, rule, key)
+);
 
+-- ---------------------------------------------------------------------------
+-- pkg/postgres/numbering: tenant-scoped gapless numbers.
+-- ---------------------------------------------------------------------------
+CREATE TABLE public.identifier_sequences (
+    tenant_id  TEXT   NOT NULL,
+    context    TEXT   NOT NULL,
+    name       TEXT   NOT NULL,
+    last_value BIGINT NOT NULL CHECK (last_value > 0),
+    PRIMARY KEY (tenant_id, context, name)
+);
+
+-- ---------------------------------------------------------------------------
+-- pkg/scheduler: one row per daily job and Business date. finished_at is set
+-- when an attempt ends; error IS NULL marks a successful run, which is never
+-- run again.
+-- ---------------------------------------------------------------------------
+CREATE TABLE public.scheduler_runs (
+    job           TEXT        NOT NULL,
+    business_date DATE        NOT NULL,
+    started_at    TIMESTAMPTZ NOT NULL,
+    finished_at   TIMESTAMPTZ,
+    attempt       INT         NOT NULL,
+    failures      INT         NOT NULL DEFAULT 0,
+    error         TEXT,
+    PRIMARY KEY (job, business_date)
+);
+
+-- ---------------------------------------------------------------------------
+-- pkg/inbox: deduplicated work queue of incoming external messages, one
+-- row per (source, key). Parked rows are kept until an operator acts.
+-- ---------------------------------------------------------------------------
 CREATE TABLE public.inbox_messages (
     id               BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     source           TEXT        NOT NULL,
