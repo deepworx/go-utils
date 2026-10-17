@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -38,7 +39,11 @@ func (p *pgParks) holdIfParked(ctx context.Context, in parkInput) (bool, error) 
 }
 
 func (p *pgParks) park(ctx context.Context, in parkInput) error {
-	_, err := p.pool.Exec(ctx, p.queries.park, p.parkArgs(in)...)
+	var next *time.Time
+	if !in.nextAttempt.IsZero() {
+		next = &in.nextAttempt
+	}
+	_, err := p.pool.Exec(ctx, p.queries.park, append(p.parkArgs(in), next)...)
 	return err
 }
 
@@ -52,20 +57,28 @@ func (p *pgParks) parkArgs(in parkInput) []any {
 		cause, in.attempts, in.at}
 }
 
-// withHold runs fn in a transaction holding the lock on the hold of s. It
-// fails with ErrNotParked when s has no hold. fn's transaction commits
-// unless fn fails.
-func (p *pgParks) withHold(ctx context.Context, s Stream, fn func(tx pgx.Tx) error) error {
+// withHold runs fn in a transaction holding the lock on the hold of s,
+// passing the hold's failed auto-redrives. With auto set, only a hold that
+// is due is locked. It fails with ErrNotParked when s has no such hold.
+// fn's transaction commits unless fn fails.
+func (p *pgParks) withHold(ctx context.Context, s Stream, auto *autoRedrive, fn func(tx pgx.Tx, redrives int) error) error {
 	return pgx.BeginFunc(ctx, p.pool, func(tx pgx.Tx) error {
-		var locked bool
-		err := tx.QueryRow(ctx, p.queries.lockHold, p.name, s.Tenant, s.ID).Scan(&locked)
+		var (
+			redrives int
+			err      error
+		)
+		if auto != nil {
+			err = tx.QueryRow(ctx, p.queries.lockDueHold, p.name, s.Tenant, s.ID, auto.now).Scan(&redrives)
+		} else {
+			err = tx.QueryRow(ctx, p.queries.lockHold, p.name, s.Tenant, s.ID).Scan(&redrives)
+		}
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
 			return ErrNotParked
 		case err != nil:
 			return fmt.Errorf("lock hold: %w", err)
 		}
-		return fn(tx)
+		return fn(tx, redrives)
 	})
 }
 
@@ -87,7 +100,7 @@ func (p *pgParks) remaining(ctx context.Context, tx pgx.Tx, s Stream) (int, erro
 
 func (p *pgParks) redriveHead(ctx context.Context, in redriveInput) (headResult, error) {
 	var res headResult
-	err := p.withHold(ctx, in.stream, func(tx pgx.Tx) error {
+	err := p.withHold(ctx, in.stream, in.auto, func(tx pgx.Tx, redrives int) error {
 		rows, err := tx.Query(ctx, p.queries.head, p.name, in.stream.Tenant, in.stream.ID)
 		if err != nil {
 			return fmt.Errorf("read head: %w", err)
@@ -105,6 +118,9 @@ func (p *pgParks) redriveHead(ctx context.Context, in redriveInput) (headResult,
 			if _, err := tx.Exec(ctx, p.queries.fail, p.name, head.env.EventID, res.failure.Error()); err != nil {
 				return fmt.Errorf("record failure: %w", err)
 			}
+			if err := p.reschedule(ctx, tx, in, redrives+1); err != nil {
+				return err
+			}
 		} else {
 			if _, err := tx.Exec(ctx, p.queries.drop, p.name, head.env.EventID); err != nil {
 				return fmt.Errorf("release head: %w", err)
@@ -115,6 +131,50 @@ func (p *pgParks) redriveHead(ctx context.Context, in redriveInput) (headResult,
 		return err
 	})
 	return res, err
+}
+
+// reschedule moves the schedule of an auto-redriven hold on after its
+// redrives-th failure. A manual redrive leaves the schedule alone.
+func (p *pgParks) reschedule(ctx context.Context, tx pgx.Tx, in redriveInput, redrives int) error {
+	if in.auto == nil {
+		return nil
+	}
+	var next *time.Time
+	at, exhausted := in.auto.next(redrives)
+	if !exhausted {
+		next = &at
+	}
+	_, err := tx.Exec(ctx, p.queries.reschedule, p.name, in.stream.Tenant, in.stream.ID, redrives, next, exhausted)
+	if err != nil {
+		return fmt.Errorf("reschedule redrive: %w", err)
+	}
+	return nil
+}
+
+func (p *pgParks) due(ctx context.Context, now time.Time) ([]Stream, error) {
+	rows, err := p.pool.Query(ctx, p.queries.due, p.name, now)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (Stream, error) {
+		var s Stream
+		err := row.Scan(&s.Tenant, &s.ID)
+		return s, err
+	})
+}
+
+func (p *pgParks) nextDue(ctx context.Context) (time.Time, bool, error) {
+	var next *time.Time
+	if err := p.pool.QueryRow(ctx, p.queries.nextDue, p.name).Scan(&next); err != nil || next == nil {
+		return time.Time{}, false, err
+	}
+	return next.UTC(), true, nil
+}
+
+func (p *pgParks) stats(ctx context.Context) (parkStats, error) {
+	var st parkStats
+	err := p.pool.QueryRow(ctx, p.queries.stats, p.name).Scan(&st.streams, &st.events, &st.exhausted)
+	return st, err
 }
 
 type pgHead struct {
@@ -153,7 +213,7 @@ func (p *pgParks) replay(ctx context.Context, replay replayFunc, h pgHead) error
 }
 
 func (p *pgParks) discard(ctx context.Context, in discardInput) error {
-	return p.withHold(ctx, in.stream, func(tx pgx.Tx) error {
+	return p.withHold(ctx, in.stream, nil, func(tx pgx.Tx, _ int) error {
 		tag, err := tx.Exec(ctx, p.queries.discard, p.name, in.stream.Tenant, in.stream.ID, in.eventID, in.at, in.by)
 		if err != nil {
 			return err
@@ -175,11 +235,15 @@ func (p *pgParks) list(ctx context.Context, tenant string) ([]Parked, error) {
 		var (
 			pk    Parked
 			cause *string
+			next  *time.Time
 		)
 		err := row.Scan(&pk.Stream.Tenant, &pk.Stream.ID, &pk.StreamType, &pk.StreamPosition, &pk.EventID,
-			&pk.EventType, &cause, &pk.Attempts, &pk.ParkedAt)
+			&pk.EventType, &cause, &pk.Attempts, &pk.ParkedAt, &next, &pk.Exhausted)
 		if cause != nil {
 			pk.Cause = *cause
+		}
+		if next != nil {
+			pk.NextAttemptAt = next.UTC()
 		}
 		pk.ParkedAt = pk.ParkedAt.UTC()
 		return pk, err
@@ -191,7 +255,8 @@ func (p *pgParks) list(ctx context.Context, tenant string) ([]Parked, error) {
 type pgQueries struct {
 	holdIfParked, park                         string
 	lockHold, head, count, release, fail, drop string
-	discard, list                              string
+	lockDueHold, reschedule, due, nextDue      string
+	discard, list, stats                       string
 }
 
 func newPgQueries(schema string) pgQueries {
@@ -212,13 +277,25 @@ func newPgQueries(schema string) pgQueries {
 			)
 			SELECT EXISTS (SELECT 1 FROM hold)`,
 		park: `WITH hold AS (
-				INSERT INTO ` + streams + ` (consumer, tenant_id, stream_id, parked_at)
-				VALUES ($1, $2, $3, $10) ON CONFLICT DO NOTHING
+				INSERT INTO ` + streams + ` (consumer, tenant_id, stream_id, parked_at, next_attempt_at)
+				VALUES ($1, $2, $3, $10, $11) ON CONFLICT DO NOTHING
 			)
 			` + insert + ` VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 			ON CONFLICT (consumer, event_id) DO NOTHING`,
 
-		lockHold: `SELECT true FROM ` + streams + ` WHERE ` + stream + ` FOR UPDATE`,
+		lockHold: `SELECT redrives FROM ` + streams + ` WHERE ` + stream + ` FOR UPDATE`,
+		lockDueHold: `SELECT redrives FROM ` + streams + ` WHERE ` + stream + `
+			AND NOT exhausted AND next_attempt_at <= $4 FOR UPDATE`,
+		reschedule: `UPDATE ` + streams + ` SET redrives = $4, next_attempt_at = $5, exhausted = $6
+			WHERE ` + stream,
+		due: `SELECT tenant_id, stream_id FROM ` + streams + `
+			WHERE consumer = $1 AND NOT exhausted AND next_attempt_at <= $2
+			ORDER BY next_attempt_at, tenant_id, stream_id`,
+		nextDue: `SELECT min(next_attempt_at) FROM ` + streams + ` WHERE consumer = $1 AND NOT exhausted`,
+		stats: `SELECT
+				(SELECT count(*)::int FROM ` + streams + ` WHERE consumer = $1),
+				(SELECT count(*)::int FROM ` + parked + ` WHERE consumer = $1 AND discarded_at IS NULL),
+				(SELECT count(*)::int FROM ` + streams + ` WHERE consumer = $1 AND exhausted)`,
 		head: `SELECT e.transaction_id::text::numeric, e.global_position, e.event_id, e.tenant_id,
 				e.stream_type, e.stream_id, e.stream_position, e.event_type, e.schema_version, e.event_data,
 				e.actor, e.correlation_id, e.causation_id, e.recorded_at
@@ -234,7 +311,7 @@ func newPgQueries(schema string) pgQueries {
 		discard: `UPDATE ` + parked + ` SET discarded_at = $5, discarded_by = $6
 			WHERE ` + stream + ` AND event_id = $4 AND discarded_at IS NULL`,
 		list: `SELECT p.tenant_id, p.stream_id, p.stream_type, p.stream_position, p.event_id, p.event_type,
-				p.cause, p.attempts, p.parked_at
+				p.cause, p.attempts, p.parked_at, s.next_attempt_at, s.exhausted
 			FROM ` + parked + ` p JOIN ` + streams + ` s USING (consumer, tenant_id, stream_id)
 			WHERE p.consumer = $1 AND ($2 = '' OR p.tenant_id = $2) AND p.discarded_at IS NULL
 			ORDER BY s.parked_at, p.tenant_id, p.stream_id, p.stream_position`,

@@ -8,6 +8,8 @@ import (
 	"slices"
 	"time"
 
+	"go.opentelemetry.io/otel/metric"
+
 	"github.com/deepworx/go-utils/internal/backoff"
 	"github.com/deepworx/go-utils/internal/consumerhook"
 	"github.com/deepworx/go-utils/internal/telemetry"
@@ -44,9 +46,12 @@ type Config struct {
 type Option func(*options)
 
 type options struct {
-	retry   consumer.Retry
-	timeout time.Duration
-	logger  *slog.Logger
+	retry         consumer.Retry
+	timeout       time.Duration
+	redrive       backoff.Steps
+	logger        *slog.Logger
+	now           func() time.Time
+	meterProvider metric.MeterProvider
 }
 
 // WithRetry sets how often a failing reaction is tried before its Stream is
@@ -63,21 +68,58 @@ func WithTimeout(d time.Duration) Option {
 	return func(o *options) { o.timeout = d }
 }
 
+// WithRedrive sets the auto-redrive schedule of a Parked Stream: the
+// delay before each redrive, counted from the park or the previous failed
+// redrive and jittered down by up to a fifth. After the last step the hold
+// is exhausted and only a manual Redrive or Discard releases it. No steps
+// disable auto-redrive. The default is 1m, 5m, 30m, 2h, 12h.
+func WithRedrive(steps ...time.Duration) Option {
+	return func(o *options) { o.redrive = slices.Clone(steps) }
+}
+
 // WithLogger sets the logger. The default is slog.Default().
 func WithLogger(l *slog.Logger) Option {
 	return func(o *options) { o.logger = l }
+}
+
+// WithClock sets the clock that stamps parks and discards and decides
+// which redrives are due. The default is time.Now.
+func WithClock(now func() time.Time) Option {
+	return func(o *options) { o.now = now }
+}
+
+// WithMeterProvider sets the meter provider of the Reactor's and its
+// Consumer's instruments. The default is the OTel global.
+func WithMeterProvider(mp metric.MeterProvider) Option {
+	return func(o *options) { o.meterProvider = mp }
 }
 
 func newOptions(opts []Option) options {
 	o := options{
 		retry:   consumer.Retry{MaxAttempts: 5, Base: time.Second, Max: 30 * time.Second},
 		timeout: 60 * time.Second,
+		redrive: backoff.Steps{time.Minute, 5 * time.Minute, 30 * time.Minute, 2 * time.Hour, 12 * time.Hour},
 		logger:  slog.Default(),
+		now:     time.Now,
 	}
 	for _, opt := range opts {
 		opt(&o)
 	}
 	return o
+}
+
+func (o options) validate() error {
+	switch {
+	case o.timeout <= 0:
+		return fmt.Errorf("timeout %s: %w", o.timeout, consumer.ErrInvalidConfig)
+	case o.logger == nil:
+		return fmt.Errorf("nil logger: %w", consumer.ErrInvalidConfig)
+	case o.now == nil:
+		return fmt.Errorf("nil clock: %w", consumer.ErrInvalidConfig)
+	case slices.ContainsFunc(o.redrive, func(d time.Duration) bool { return d <= 0 }):
+		return fmt.Errorf("redrive steps %v: %w", o.redrive, consumer.ErrInvalidConfig)
+	}
+	return nil
 }
 
 // Reactor is a stateless Consumer that turns events into commands. It
@@ -90,6 +132,8 @@ func newOptions(opts []Option) options {
 // of the Stream are held in order while the Cursor moves on for all other
 // Streams. Only a failure to write the park list makes the Reactor retry
 // and finally go Stopped.
+//
+// The lease holder redrives Parked Streams on the WithRedrive schedule.
 type Reactor struct {
 	name     string
 	actor    string
@@ -99,6 +143,9 @@ type Reactor struct {
 	parks    parkStore
 	consumer *consumer.Consumer
 	logger   *slog.Logger
+	inst     instruments
+	// parked wakes the auto-redrive loop after a park.
+	parked chan struct{}
 }
 
 const actorPrefix = "system:reactor:"
@@ -113,9 +160,8 @@ func New(rt consumer.Runtime, cfg Config, opts ...Option) (*Reactor, error) {
 		return nil, fmt.Errorf("new reactor %q: start at %d: %w", cfg.Name, cfg.StartAt, consumer.ErrInvalidConfig)
 	}
 	o := newOptions(opts)
-	if o.timeout <= 0 || o.logger == nil {
-		return nil, fmt.Errorf("new reactor %q: timeout %s, logger set %t: %w",
-			cfg.Name, o.timeout, o.logger != nil, consumer.ErrInvalidConfig)
+	if err := o.validate(); err != nil {
+		return nil, fmt.Errorf("new reactor %q: %w", cfg.Name, err)
 	}
 	backend, ok := consumerhook.RuntimeBackend(rt)
 	if !ok {
@@ -129,12 +175,16 @@ func New(rt consumer.Runtime, cfg Config, opts ...Option) (*Reactor, error) {
 		opts:    o,
 		retry:   backoff.Retry(o.retry),
 		logger:  o.logger.With(telemetry.LogConsumer, cfg.Name),
+		inst:    newInstruments(telemetry.Providers{MeterProvider: o.meterProvider}.Meter(scope), cfg.Name),
+		parked:  make(chan struct{}, 1),
 	}
 	r.parks = newParkStore(backend, cfg.Name)
 
 	hook, _ := consumerhook.ReactorOption(consumerhook.ReactorOptions{
 		SeedAtHead:   cfg.StartAt == FromNow,
 		DecodeFailed: r.decodeFailed,
+		Leased:       r.leased,
+		Drained:      r.redriveDue,
 	}).(consumer.Option)
 	var handler consumer.Handler
 	if cfg.Handler != nil {
@@ -145,7 +195,8 @@ func New(rt consumer.Runtime, cfg Config, opts ...Option) (*Reactor, error) {
 		EventTypes: filter(cfg),
 		Mode:       consumer.OwnTransaction,
 		Handler:    handler,
-	}, consumer.WithRetry(o.retry), consumer.WithLogger(o.logger), consumer.WithEventSpans(true), hook)
+	}, consumer.WithRetry(o.retry), consumer.WithLogger(o.logger), consumer.WithEventSpans(true),
+		consumer.WithMeterProvider(o.meterProvider), hook)
 	if err != nil {
 		return nil, fmt.Errorf("new reactor: %w", err)
 	}
@@ -170,7 +221,7 @@ func (r *Reactor) Consumer() *consumer.Consumer { return r.consumer }
 // handle is the Consumer's handler: it holds env behind a Parked Stream,
 // or reacts and Parks the Stream when the reaction fails for good.
 func (r *Reactor) handle(ctx context.Context, env eventstore.Envelope) error {
-	held, err := r.parks.holdIfParked(ctx, parkInput{env: env, at: time.Now().UTC()})
+	held, err := r.parks.holdIfParked(ctx, parkInput{env: env, at: r.now()})
 	if err != nil {
 		return fmt.Errorf("check park list: %w", err)
 	}
@@ -189,7 +240,7 @@ func (r *Reactor) handle(ctx context.Context, env eventstore.Envelope) error {
 
 // decodeFailed Parks an undecodable event at once.
 func (r *Reactor) decodeFailed(ctx context.Context, env eventstore.Envelope, payload eventstore.Payload, cause error) error {
-	in := parkInput{env: env, payload: &payload, at: time.Now().UTC()}
+	in := parkInput{env: env, payload: &payload, at: r.now()}
 	held, err := r.parks.holdIfParked(ctx, in)
 	if err != nil {
 		return fmt.Errorf("check park list: %w", err)
@@ -202,9 +253,16 @@ func (r *Reactor) decodeFailed(ctx context.Context, env eventstore.Envelope, pay
 }
 
 func (r *Reactor) park(ctx context.Context, in parkInput) error {
-	in.at = time.Now().UTC()
+	in.at = r.now()
+	if d, ok := r.opts.redrive.Delay(1, nil); ok {
+		in.nextAttempt = in.at.Add(d)
+	}
 	if err := r.parks.park(ctx, in); err != nil {
 		return fmt.Errorf("park event %s: %w", in.env.EventID, err)
+	}
+	select {
+	case r.parked <- struct{}{}:
+	default:
 	}
 	r.logger.WarnContext(ctx, "reactor parked stream",
 		append(eventAttrs(in.env), telemetry.LogAttempt, in.attempts, telemetry.LogError, in.cause)...)
@@ -255,6 +313,8 @@ func (r *Reactor) react(ctx context.Context, env eventstore.Envelope) (err error
 	}
 	return err
 }
+
+func (r *Reactor) now() time.Time { return r.opts.now().UTC() }
 
 func eventAttrs(env eventstore.Envelope) []any {
 	return []any{

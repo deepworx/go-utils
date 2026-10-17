@@ -22,7 +22,15 @@
 // consumer.Permanent, a panic or an undecodable event, Parks its Stream.
 // The Reactor holds the event and every later event of that Stream in order
 // while its Cursor moves on for all other Streams. Redrive replays a Parked
-// Stream, Discard skips one held event and Parked lists them. In Postgres
+// Stream, Discard skips one held event and Parked lists them.
+//
+// The lease holder redrives Parked Streams automatically on the WithRedrive
+// schedule (default 1m, 5m, 30m, 2h, 12h, each jittered down by up to a
+// fifth). After the last step the Stream is exhausted until a manual
+// Redrive or Discard. Drain also runs the redrives that are due, and
+// Status counts the Parked Streams, held events and exhausted Streams. The
+// lease holder reports the same counts as the
+// eventsourcing.reactor.parked.* gauges. In Postgres
 // the park list lives in the parked_streams and parked_events tables of
 // docs/postgres/schema.sql.
 package reactor

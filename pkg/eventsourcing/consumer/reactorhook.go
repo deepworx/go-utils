@@ -30,5 +30,7 @@ func reactorOption(ro consumerhook.ReactorOptions) any {
 	return Option(func(o *options) {
 		o.seedAtHead = ro.SeedAtHead
 		o.decodeFailed = ro.DecodeFailed
+		o.leased = ro.Leased
+		o.drained = ro.Drained
 	})
 }
