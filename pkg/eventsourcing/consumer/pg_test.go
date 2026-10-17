@@ -40,6 +40,7 @@ func TestPgContract(t *testing.T) {
 			UnitOfWork: e.uow,
 			Runtime:    e.runtime(t),
 			Effects:    consumertest.NewPgEffects(t, e.pool),
+			Restart:    func(t *testing.T) consumer.Runtime { return e.runtime(t) },
 		}
 	}, consumertest.Sequential())
 }
