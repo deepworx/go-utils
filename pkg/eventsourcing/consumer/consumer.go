@@ -10,6 +10,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/deepworx/go-utils/internal/backoff"
+	"github.com/deepworx/go-utils/internal/consumerhook"
 	"github.com/deepworx/go-utils/internal/telemetry"
 )
 
@@ -58,6 +59,10 @@ type options struct {
 	logger         *slog.Logger
 	eventSpans     bool
 	tracerProvider trace.TracerProvider
+	// seedAtHead and decodeFailed are set by package reactor through
+	// internal/consumerhook.
+	seedAtHead   bool
+	decodeFailed consumerhook.DecodeFailedFunc
 }
 
 // WithBatchSize sets how many events one batch reads. The default is 100.
@@ -156,7 +161,7 @@ func New(rt Runtime, cfg Config, opts ...Option) (*Consumer, error) {
 	}
 	types = slices.Compact(slices.Sorted(slices.Values(types)))
 
-	p, err := rt.attach(attachInput{name: cfg.Name, eventTypes: types})
+	p, err := rt.attach(attachInput{name: cfg.Name, eventTypes: types, seedAtHead: o.seedAtHead})
 	if err != nil {
 		return nil, fmt.Errorf("new consumer: %w", err)
 	}

@@ -21,6 +21,9 @@ type attachInput struct {
 	name string
 	// eventTypes is the filter; empty means every type.
 	eventTypes []string
+	// seedAtHead seeds a new Cursor at the head of the log on its first
+	// claim.
+	seedAtHead bool
 }
 
 // port is what a Consumer needs from its Runtime: its Cursor, the filtered

@@ -54,6 +54,7 @@ type PgRuntimeConfig struct {
 // through postgres.Conn commit or roll back together with the Cursor.
 type PgRuntime struct {
 	pool     *pgxpool.Pool
+	schema   string
 	codec    *eventstore.Codec
 	uow      *postgres.PgUnitOfWork
 	listener *notify.Listener
@@ -87,6 +88,7 @@ func NewPgRuntime(cfg PgRuntimeConfig) (*PgRuntime, error) {
 	schema := store.Schema()
 	return &PgRuntime{
 		pool:     cfg.Pool,
+		schema:   schema,
 		codec:    store.Codec(),
 		uow:      postgres.NewUnitOfWork(cfg.Pool),
 		listener: cfg.Listener,
@@ -131,6 +133,7 @@ func (rt *PgRuntime) attach(in attachInput) (port, error) {
 		rt:        rt,
 		name:      in.name,
 		types:     types,
+		seed:      in.seedAtHead,
 		wake:      make(chan struct{}, 1),
 		resumedCh: make(chan struct{}, 1),
 	}
@@ -150,6 +153,7 @@ type pgPort struct {
 	rt    *PgRuntime
 	name  string
 	types []string
+	seed  bool
 	// wake receives when a NOTIFY (or Gap) arrived on the subscription of
 	// the current lease.
 	wake      chan struct{}
@@ -164,6 +168,10 @@ func (p *pgPort) acquire(ctx context.Context) (context.Context, func(), error) {
 	leaseCtx, l, err := p.tryAcquire(ctx)
 	if err != nil {
 		return nil, nil, err
+	}
+	if err := p.seedCursor(leaseCtx); err != nil {
+		l.Release()
+		return nil, nil, fmt.Errorf("seed cursor: %w", err)
 	}
 	if _, err := p.rt.pool.Exec(leaseCtx, p.rt.queries.claim, p.name, p.types); err != nil {
 		l.Release()
@@ -181,6 +189,20 @@ func (p *pgPort) acquire(ctx context.Context) (context.Context, func(), error) {
 			l.Release()
 		})
 	}, nil
+}
+
+// seedCursor creates a missing Cursor row at the head of the log when the
+// Consumer seeds at its head.
+func (p *pgPort) seedCursor(ctx context.Context) error {
+	if !p.seed {
+		return nil
+	}
+	head, err := p.head(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = p.rt.pool.Exec(ctx, p.rt.queries.seed, p.name, p.types, xid(head), head.Position)
+	return err
 }
 
 // tryAcquire takes the Consumer's lease, waiting up to connectWait for
@@ -382,7 +404,7 @@ func xid(c eventstore.Cursor) string {
 // unfiltered ones read the log-order index. Both only see events below
 // pg_snapshot_xmin.
 type pgQueries struct {
-	claim, load, advance, stop, resume string
+	claim, seed, load, advance, stop, resume string
 
 	read, readFiltered       string
 	head, headFiltered       string
@@ -419,6 +441,8 @@ func newPgQueries(schema string) pgQueries {
 	return pgQueries{
 		claim: `INSERT INTO ` + cursors + ` (name, event_types) VALUES ($1, $2)
 			ON CONFLICT (name) DO UPDATE SET event_types = EXCLUDED.event_types`,
+		seed: `INSERT INTO ` + cursors + ` (name, event_types, transaction_id, global_position)
+			VALUES ($1, $2, $3::text::xid8, $4) ON CONFLICT (name) DO NOTHING`,
 		load: `SELECT transaction_id::text::numeric, global_position, stopped, stopped_at, stopped_error
 			FROM ` + cursors + ` WHERE name = $1`,
 		advance: `UPDATE ` + cursors + ` SET transaction_id = $4::text::xid8, global_position = $5

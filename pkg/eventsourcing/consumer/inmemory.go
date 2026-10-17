@@ -42,6 +42,7 @@ type memCursor struct {
 	cursor  eventstore.Cursor
 	stopped *Stop
 	held    bool
+	claimed bool
 	resumed chan struct{}
 }
 
@@ -86,12 +87,13 @@ func (rt *InMemoryRuntime) attach(in attachInput) (port, error) {
 	}
 	c := &memCursor{resumed: make(chan struct{}, 1)}
 	rt.cursors[in.name] = c
-	return &memPort{rt: rt, types: in.eventTypes, cursor: c}, nil
+	return &memPort{rt: rt, types: in.eventTypes, seed: in.seedAtHead, cursor: c}, nil
 }
 
 type memPort struct {
 	rt     *InMemoryRuntime
 	types  []string
+	seed   bool
 	cursor *memCursor
 }
 
@@ -104,6 +106,10 @@ func (p *memPort) acquire(ctx context.Context) (context.Context, func(), error) 
 		return nil, nil, ErrRunning
 	}
 	p.cursor.held = true
+	if p.seed && !p.cursor.claimed {
+		p.cursor.cursor = p.rt.feed.Head(p.types)
+	}
+	p.cursor.claimed = true
 	var once sync.Once
 	release := func() {
 		once.Do(func() {
