@@ -14,6 +14,7 @@ import (
 
 	"github.com/deepworx/go-utils/internal/backoff"
 	"github.com/deepworx/go-utils/internal/consumerhook"
+	"github.com/deepworx/go-utils/internal/safecall"
 	"github.com/deepworx/go-utils/internal/telemetry"
 	"github.com/deepworx/go-utils/pkg/ctxutil"
 	"github.com/deepworx/go-utils/pkg/eventsourcing/consumer"
@@ -346,16 +347,10 @@ func (r *Reactor) react(ctx context.Context, env eventstore.Envelope) (err error
 	ctx = ctxutil.WithCorrelationID(ctx, env.CorrelationID)
 	ctx = ctxutil.WithActor(ctx, r.actor)
 	ctx = ctxutil.WithCausationID(ctx, env.EventID)
-	ctx, cancel := context.WithTimeout(ctx, r.opts.timeout)
-	defer cancel()
-	defer func() {
-		if p := recover(); p != nil {
-			err = consumer.Permanent(fmt.Errorf("reaction panic: %v", p))
-		}
-	}()
-	err = r.handler.Handle(ctx, env)
-	if err == nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		err = fmt.Errorf("reaction exceeded timeout %s: %w", r.opts.timeout, ctx.Err())
+	err = safecall.Call(ctx, safecall.Input{Timeout: r.opts.timeout, LateSuccessFails: true},
+		func(ctx context.Context) error { return r.handler.Handle(ctx, env) })
+	if p := (*safecall.PanicError)(nil); errors.As(err, &p) {
+		return consumer.Permanent(fmt.Errorf("reaction %w", p))
 	}
 	return err
 }

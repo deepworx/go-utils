@@ -15,6 +15,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/deepworx/go-utils/internal/backoff"
+	"github.com/deepworx/go-utils/internal/safecall"
 	"github.com/deepworx/go-utils/internal/telemetry"
 	"github.com/deepworx/go-utils/pkg/ctxutil"
 	"github.com/deepworx/go-utils/pkg/postgres/lease"
@@ -194,17 +195,18 @@ func (s *Scheduler) execute(ctx context.Context, in executeInput) error {
 
 // invoke calls job.Run under its Timeout and turns a panic or a timeout
 // into an error.
-func invoke(ctx context.Context, job Job, run Run) (outcome Outcome, err error) {
-	ctx, cancel := context.WithTimeout(ctx, job.Timeout)
-	defer cancel()
-	defer func() {
-		if r := recover(); r != nil {
-			err = fmt.Errorf("%w: %v", ErrPanic, r)
-		}
-	}()
-	outcome, err = job.Run(ctx, run)
-	if err == nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		err = fmt.Errorf("scheduler: run exceeded timeout %s: %w", job.Timeout, ctx.Err())
+func invoke(ctx context.Context, job Job, run Run) (Outcome, error) {
+	var outcome Outcome
+	err := safecall.Call(ctx, safecall.Input{Timeout: job.Timeout, LateSuccessFails: true},
+		func(ctx context.Context) (err error) {
+			outcome, err = job.Run(ctx, run)
+			return err
+		})
+	if p := (*safecall.PanicError)(nil); errors.As(err, &p) {
+		return outcome, fmt.Errorf("%w: %v", ErrPanic, p.Value)
+	}
+	if errors.Is(err, safecall.ErrTimeout) {
+		return outcome, fmt.Errorf("scheduler: run %w", err)
 	}
 	return outcome, err
 }

@@ -11,6 +11,7 @@ import (
 
 	"github.com/deepworx/go-utils/internal/backoff"
 	"github.com/deepworx/go-utils/internal/consumerhook"
+	"github.com/deepworx/go-utils/internal/safecall"
 	"github.com/deepworx/go-utils/internal/telemetry"
 	"github.com/deepworx/go-utils/pkg/ctxutil"
 	"github.com/deepworx/go-utils/pkg/eventsourcing/eventstore"
@@ -382,10 +383,9 @@ func (c *Consumer) handle(ctx context.Context, r record) (err error) {
 			span.End()
 		}()
 	}
-	defer func() {
-		if p := recover(); p != nil {
-			err = Permanent(fmt.Errorf("handler panic: %v", p))
-		}
-	}()
-	return c.handler.Handle(ctx, env)
+	err = safecall.Call(ctx, safecall.Input{}, func(ctx context.Context) error { return c.handler.Handle(ctx, env) })
+	if p := (*safecall.PanicError)(nil); errors.As(err, &p) {
+		return Permanent(fmt.Errorf("handler %w", p))
+	}
+	return err
 }

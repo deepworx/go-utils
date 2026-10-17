@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -17,6 +16,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/deepworx/go-utils/internal/backoff"
+	"github.com/deepworx/go-utils/internal/safecall"
 	"github.com/deepworx/go-utils/internal/telemetry"
 	"github.com/deepworx/go-utils/pkg/ctxutil"
 	"github.com/deepworx/go-utils/pkg/postgres/lease"
@@ -429,23 +429,18 @@ func (w *Worker) call(ctx context.Context, d Delivery) (err error) {
 	if d.Tenant != "" {
 		ctx = ctxutil.WithTenantID(ctx, d.Tenant)
 	}
-	ctx, cancel := context.WithTimeout(ctx, w.timeout)
-	defer cancel()
-	defer func() {
-		if r := recover(); r != nil {
-			err = &panicError{value: r}
-			w.logger.ErrorContext(ctx, "inbox: handler panic",
-				slog.Int64(telemetry.LogMessageID, d.ID),
-				slog.String(telemetry.LogError, err.Error()),
-				slog.String(telemetry.LogStack, string(debug.Stack())))
-		}
-	}()
-	return w.handle(ctx, d)
+	err = safecall.Call(ctx, safecall.Input{Timeout: w.timeout}, func(ctx context.Context) error {
+		return w.handle(ctx, d)
+	})
+	if p := (*safecall.PanicError)(nil); errors.As(err, &p) {
+		err = fmt.Errorf("inbox: handler %w", p)
+		w.logger.ErrorContext(ctx, "inbox: handler panic",
+			slog.Int64(telemetry.LogMessageID, d.ID),
+			slog.String(telemetry.LogError, err.Error()),
+			slog.String(telemetry.LogStack, string(p.Stack)))
+	}
+	return err
 }
-
-type panicError struct{ value any }
-
-func (e *panicError) Error() string { return fmt.Sprintf("inbox: handler panic: %v", e.value) }
 
 // settlement maps a Handler result to the message's next state.
 func (w *Worker) settlement(c claimed, err error) settlement {
