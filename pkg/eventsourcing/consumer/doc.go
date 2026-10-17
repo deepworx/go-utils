@@ -44,4 +44,16 @@
 //
 // Tests and one-shot jobs call Drain, which processes synchronously up to
 // the head of the log at the time of the call.
+//
+// # Observability
+//
+// Each batch runs in a CONSUMER span "process {consumer}". It is a new
+// root, linked to the send spans that appended up to 128 of its events.
+// WithEventSpans adds an INTERNAL span "handle {event type}" per event.
+// The histograms eventsourcing.consumer.batch.duration and
+// eventsourcing.consumer.process.duration carry only the Consumer's name.
+// While Run holds the lease, the gauges eventsourcing.consumer.pending,
+// eventsourcing.consumer.lag and eventsourcing.consumer.stopped are polled
+// from Status at each metric collection, so only the lease owner reports
+// them; Drain does not. A PgRuntime reports eventsourcing.xmin.age.
 package consumer

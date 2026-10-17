@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/deepworx/go-utils/internal/backoff"
@@ -58,6 +59,7 @@ type options struct {
 	logger         *slog.Logger
 	eventSpans     bool
 	tracerProvider trace.TracerProvider
+	meterProvider  metric.MeterProvider
 }
 
 // WithBatchSize sets how many events one batch reads. The default is 100.
@@ -93,6 +95,12 @@ func WithEventSpans(on bool) Option {
 // global.
 func WithTracerProvider(tp trace.TracerProvider) Option {
 	return func(o *options) { o.tracerProvider = tp }
+}
+
+// WithMeterProvider sets the meter provider of the histograms and gauges.
+// The default is the OTel global.
+func WithMeterProvider(mp metric.MeterProvider) Option {
+	return func(o *options) { o.meterProvider = mp }
 }
 
 func newOptions(opts []Option) options {
@@ -135,6 +143,7 @@ type Consumer struct {
 	port    port
 	logger  *slog.Logger
 	tracer  trace.Tracer
+	inst    instruments
 	running atomic.Bool
 }
 
@@ -169,6 +178,7 @@ func New(rt Runtime, cfg Config, opts ...Option) (*Consumer, error) {
 		port:    p,
 		logger:  o.logger.With(telemetry.LogConsumer, cfg.Name),
 		tracer:  telemetry.Providers{TracerProvider: o.tracerProvider}.Tracer(scope),
+		inst:    newInstruments(telemetry.Providers{MeterProvider: o.meterProvider}.Meter(scope), cfg.Name),
 	}, nil
 }
 

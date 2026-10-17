@@ -11,8 +11,10 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.opentelemetry.io/otel/metric"
 
 	"github.com/deepworx/go-utils/internal/storehook"
+	"github.com/deepworx/go-utils/internal/telemetry"
 	"github.com/deepworx/go-utils/pkg/eventsourcing/eventstore"
 	"github.com/deepworx/go-utils/pkg/postgres"
 	"github.com/deepworx/go-utils/pkg/postgres/lease"
@@ -41,6 +43,9 @@ type PgRuntimeConfig struct {
 	// Claims grants each Consumer its lease. Required, and Claims.Run must
 	// be running.
 	Claims *lease.Claims
+	// MeterProvider records the eventsourcing.xmin.age gauge. Optional: the
+	// default is the OTel global.
+	MeterProvider metric.MeterProvider
 }
 
 // PgRuntime runs Consumers on an eventstore.PgStore. Cursors live in the
@@ -85,6 +90,11 @@ func NewPgRuntime(cfg PgRuntimeConfig) (*PgRuntime, error) {
 	}
 	store := src.(pgSource)
 	schema := store.Schema()
+	reportXminAge(telemetry.Providers{MeterProvider: cfg.MeterProvider}.Meter(scope), func(ctx context.Context) (int64, error) {
+		var age int64
+		err := cfg.Pool.QueryRow(ctx, xminAgeQuery).Scan(&age)
+		return age, err
+	})
 	return &PgRuntime{
 		pool:     cfg.Pool,
 		codec:    store.Codec(),
@@ -282,13 +292,14 @@ func (p *pgPort) read(ctx context.Context, in readInput) ([]record, error) {
 
 func scanRecord(row pgx.CollectableRow) (record, error) {
 	var (
-		r         record
-		causation *uuid.UUID
+		r            record
+		causation    *uuid.UUID
+		traceContext *string
 	)
 	err := row.Scan(&r.env.Cursor.TransactionID, &r.env.Cursor.Position, &r.env.EventID, &r.env.TenantID,
 		&r.env.StreamType, &r.env.StreamID, &r.env.StreamPosition, &r.payload.EventType,
 		&r.payload.SchemaVersion, &r.payload.Data, &r.env.Actor, &r.env.CorrelationID, &causation,
-		&r.env.RecordedAt)
+		&r.env.RecordedAt, &traceContext)
 	if err != nil {
 		return record{}, err
 	}
@@ -296,6 +307,9 @@ func scanRecord(row pgx.CollectableRow) (record, error) {
 	r.env.RecordedAt = r.env.RecordedAt.UTC()
 	if causation != nil {
 		r.env.CausationID = *causation
+	}
+	if traceContext != nil {
+		r.traceContext = *traceContext
 	}
 	return r, nil
 }
@@ -389,6 +403,12 @@ type pgQueries struct {
 	pending, pendingFiltered string
 }
 
+// xminAgeQuery counts the transaction IDs assigned since the oldest one
+// still running in the cluster, the transactions that hold back what
+// Consumers see.
+const xminAgeQuery = `SELECT (pg_snapshot_xmax(s)::text::bigint - pg_snapshot_xmin(s)::text::bigint)
+	FROM pg_current_snapshot() s`
+
 const visible = `e.transaction_id < pg_snapshot_xmin(pg_current_snapshot())`
 
 func newPgQueries(schema string) pgQueries {
@@ -396,7 +416,7 @@ func newPgQueries(schema string) pgQueries {
 	cursors := pgx.Identifier{schema, "consumer_cursors"}.Sanitize()
 	columns := `e.transaction_id::text::numeric, e.global_position, e.event_id, e.tenant_id,
 		e.stream_type, e.stream_id, e.stream_position, e.event_type, e.schema_version, e.event_data,
-		e.actor, e.correlation_id, e.causation_id, e.recorded_at`
+		e.actor, e.correlation_id, e.causation_id, e.recorded_at, e.trace_context`
 	order := `ORDER BY e.transaction_id, e.global_position`
 	orderDesc := `ORDER BY e.transaction_id DESC, e.global_position DESC`
 	// after binds the Cursor to $n (transaction ID) and $n+1 (position).
