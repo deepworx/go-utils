@@ -30,15 +30,14 @@ type Root[I ID] interface {
 	base() *Base[I]
 }
 
-// Base holds the event-sourcing bookkeeping. Embed it by value.
+// Base holds the event-sourcing bookkeeping. Embed it by value. There is no
+// constructor: the repository allocates the aggregate (zero value must be a
+// valid starting state) and sets the ID via Init (DWX-212 Q12).
 type Base[I ID] struct {
 	id          I
 	version     int
 	uncommitted []Event
 }
-
-// NewBase returns a Base for a fresh, zero-version aggregate.
-func NewBase[I ID](id I) Base[I] { return Base[I]{id: id} }
 
 // ID returns the typed identifier.
 func (b *Base[I]) ID() I { return b.id }
@@ -63,6 +62,9 @@ func Raise[I ID](r Root[I], e Event) {
 // --- infrastructure access, used by eventstore only -------------------------
 // These are exported because eventstore lives in another package. They are
 // the "back door"; documented as not for domain use.
+
+// Init sets the ID of a freshly allocated, zero-version aggregate.
+func Init[I ID](r Root[I], id I) { r.base().id = id }
 
 // UUID returns the stream id of r.
 func UUID[I ID](r Root[I]) uuid.UUID { return uuid.UUID(r.base().id) }

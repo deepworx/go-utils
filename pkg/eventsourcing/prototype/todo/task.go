@@ -38,9 +38,6 @@ type Task struct {
 	done  bool
 }
 
-// New is the repository's empty constructor.
-func New(id TaskID) *Task { return &Task{Base: aggregate.NewBase(id)} }
-
 func (t *Task) StreamType() string { return "Todo.Task" }
 func (t *Task) Title() string      { return t.title }
 func (t *Task) Done() bool         { return t.done }

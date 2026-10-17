@@ -15,7 +15,7 @@ import (
 
 // TaskService is what an app's command handler looks like on the library.
 type TaskService struct {
-	tasks *eventstore.Repository[*todo.Task, todo.TaskID]
+	tasks *eventstore.Repository[todo.TaskID, todo.Task, *todo.Task]
 	uow   *eventstore.InMemoryUnitOfWork
 }
 
@@ -62,8 +62,8 @@ func main() {
 
 	store := eventstore.NewInMemoryStore(codec)
 	uow := eventstore.NewInMemoryUnitOfWork()
-	tasks := eventstore.NewRepository(eventstore.RepositoryConfig[*todo.Task, todo.TaskID]{
-		Store: store, UnitOfWork: uow, New: todo.New,
+	tasks := eventstore.NewRepository[todo.TaskID, todo.Task](eventstore.RepositoryConfig{
+		Store: store, UnitOfWork: uow,
 	})
 	svc := &TaskService{tasks: tasks, uow: uow}
 

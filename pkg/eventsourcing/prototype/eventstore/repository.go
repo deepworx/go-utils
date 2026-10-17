@@ -11,22 +11,33 @@ import (
 	"github.com/deepworx/go-utils/pkg/eventsourcing/prototype/aggregate"
 )
 
-// RepositoryConfig wires a Repository (CS-5: more than two inputs).
-type RepositoryConfig[T aggregate.Root[I], I aggregate.ID] struct {
+// RepositoryConfig wires a Repository.
+type RepositoryConfig struct {
 	Store      *InMemoryStore      // real: Store interface (PgStore / InMemoryStore)
 	UnitOfWork *InMemoryUnitOfWork // real: UnitOfWork interface (DWX-209)
-	// New returns a fresh zero-version aggregate to replay history into.
-	New func(id I) T
 }
 
-// Repository loads and saves one aggregate type.
-type Repository[T aggregate.Root[I], I aggregate.ID] struct {
-	cfg RepositoryConfig[T, I]
+// Repository loads and saves one aggregate type A (P is *A, inferred).
+// It allocates aggregates itself, so the domain exports no empty constructor.
+type Repository[I aggregate.ID, A any, P interface {
+	*A
+	aggregate.Root[I]
+}] struct {
+	cfg RepositoryConfig
 }
 
-// NewRepository returns a Repository. Type parameters are inferred from New.
-func NewRepository[T aggregate.Root[I], I aggregate.ID](cfg RepositoryConfig[T, I]) *Repository[T, I] {
-	return &Repository[T, I]{cfg: cfg}
+// NewRepository returns a Repository: NewRepository[todo.TaskID, todo.Task](cfg).
+func NewRepository[I aggregate.ID, A any, P interface {
+	*A
+	aggregate.Root[I]
+}](cfg RepositoryConfig) *Repository[I, A, P] {
+	return &Repository[I, A, P]{cfg: cfg}
+}
+
+func (r *Repository[I, A, P]) empty(id I) P {
+	p := P(new(A))
+	aggregate.Init[I](p, id)
+	return p
 }
 
 // --- high level: one call per command ---------------------------------------
@@ -45,7 +56,7 @@ func ExpectVersion(v int) UpdateOption {
 // Update runs one command against an existing aggregate:
 // command tx (lock) → Load → expected-version check → fn → Save.
 // fn gets the tx ctx, so guards/numbering inside it join the command tx.
-func (r *Repository[T, I]) Update(ctx context.Context, id I, fn func(ctx context.Context, agg T) error, opts ...UpdateOption) (CommandResult, error) {
+func (r *Repository[I, A, P]) Update(ctx context.Context, id I, fn func(ctx context.Context, agg P) error, opts ...UpdateOption) (CommandResult, error) {
 	var o updateOptions
 	for _, opt := range opts {
 		opt(&o)
@@ -70,8 +81,9 @@ func (r *Repository[T, I]) Update(ctx context.Context, id I, fn func(ctx context
 }
 
 // Create runs one command that starts a new stream:
-// command tx (lock) → assert empty → fn on New(id) → Save.
-func (r *Repository[T, I]) Create(ctx context.Context, id I, fn func(ctx context.Context, agg T) error) (CommandResult, error) {
+// command tx (lock) → assert empty (ErrAlreadyExists) → fn on a fresh,
+// zero-version aggregate → Save.
+func (r *Repository[I, A, P]) Create(ctx context.Context, id I, fn func(ctx context.Context, agg P) error) (CommandResult, error) {
 	var res CommandResult
 	err := r.cfg.UnitOfWork.Execute(ctx, uuid.UUID(id), func(ctx context.Context) error {
 		agg, err := r.Load(ctx, id)
@@ -81,7 +93,7 @@ func (r *Repository[T, I]) Create(ctx context.Context, id I, fn func(ctx context
 		case !errors.Is(err, ErrNotFound):
 			return err
 		}
-		agg = r.cfg.New(id)
+		agg = r.empty(id)
 		if err := fn(ctx, agg); err != nil {
 			return err
 		}
@@ -95,14 +107,14 @@ func (r *Repository[T, I]) Create(ctx context.Context, id I, fn func(ctx context
 
 // Load replays the whole stream. ErrNotFound if it has no events. Works
 // inside or outside a command transaction; outside, it is a plain read.
-func (r *Repository[T, I]) Load(ctx context.Context, id I) (T, error) {
+func (r *Repository[I, A, P]) Load(ctx context.Context, id I) (P, error) {
 	return r.loadTo(ctx, id, 0)
 }
 
 // LoadAt replays the stream up to and including version (CPQ's LoadAt).
 // ErrNotFound if the stream never reached version.
-func (r *Repository[T, I]) LoadAt(ctx context.Context, id I, version int) (T, error) {
-	var zero T
+func (r *Repository[I, A, P]) LoadAt(ctx context.Context, id I, version int) (P, error) {
+	var zero P
 	if version < 1 {
 		return zero, fmt.Errorf("load %s at version %d: version must be >= 1", uuid.UUID(id), version)
 	}
@@ -116,8 +128,8 @@ func (r *Repository[T, I]) LoadAt(ctx context.Context, id I, version int) (T, er
 	return agg, nil
 }
 
-func (r *Repository[T, I]) loadTo(ctx context.Context, id I, to int) (T, error) {
-	var zero T
+func (r *Repository[I, A, P]) loadTo(ctx context.Context, id I, to int) (P, error) {
+	var zero P
 	t, err := tenant(ctx)
 	if err != nil {
 		return zero, err
@@ -126,7 +138,7 @@ func (r *Repository[T, I]) loadTo(ctx context.Context, id I, to int) (T, error) 
 	if len(envs) == 0 {
 		return zero, fmt.Errorf("stream %s: %w", uuid.UUID(id), ErrNotFound)
 	}
-	agg := r.cfg.New(id)
+	agg := r.empty(id)
 	for _, env := range envs {
 		ev, err := r.cfg.Store.codec.decode(env.EventType, env.Data)
 		if err != nil {
@@ -139,7 +151,7 @@ func (r *Repository[T, I]) loadTo(ctx context.Context, id I, to int) (T, error) 
 
 // Save appends uncommitted events. Must run inside the command transaction
 // for agg's stream (ErrNotCommandTransaction / ErrStreamMismatch otherwise).
-func (r *Repository[T, I]) Save(ctx context.Context, agg T) (CommandResult, error) {
+func (r *Repository[I, A, P]) Save(ctx context.Context, agg P) (CommandResult, error) {
 	id := aggregate.UUID(agg)
 	k, err := commandStream(ctx, id)
 	if err != nil {
