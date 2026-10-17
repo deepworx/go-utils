@@ -1,0 +1,196 @@
+=== C3 claim: added type exists only above the Cursor (New.Thing), Cursor mid-log
+                                                                       QUERY PLAN                                                                        
+---------------------------------------------------------------------------------------------------------------------------------------------------------
+ Result (actual time=0.015..0.015 rows=1 loops=1)
+   Buffers: shared hit=4
+   InitPlan 1 (returns $0)
+     ->  Index Only Scan using events_type_order on events (actual time=0.014..0.014 rows=0 loops=1)
+           Index Cond: ((event_type = ANY ('{New.Thing}'::text[])) AND (ROW(transaction_id, global_position) <= ROW('834333'::xid8, '2500000'::bigint)))
+           Heap Fetches: 0
+           Buffers: shared hit=4
+ Planning:
+   Buffers: shared hit=167
+ Planning Time: 0.217 ms
+ Execution Time: 0.028 ms
+(11 rows)
+
+                                                                   QUERY PLAN                                                                   
+------------------------------------------------------------------------------------------------------------------------------------------------
+ Result (actual time=0.009..0.009 rows=1 loops=1)
+   Buffers: shared hit=4
+   InitPlan 1 (returns $1)
+     ->  Nested Loop Semi Join (actual time=0.008..0.009 rows=0 loops=1)
+           Buffers: shared hit=4
+           ->  Function Scan on unnest t (actual time=0.002..0.003 rows=1 loops=1)
+           ->  Index Only Scan using events_type_order on events (actual time=0.005..0.005 rows=0 loops=1)
+                 Index Cond: ((event_type = t.event_type) AND (ROW(transaction_id, global_position) <= ROW('834333'::xid8, '2500000'::bigint)))
+                 Heap Fetches: 0
+                 Buffers: shared hit=4
+ Planning:
+   Buffers: shared hit=41
+ Planning Time: 0.075 ms
+ Execution Time: 0.016 ms
+(14 rows)
+
+=== C4 claim: added retired type + never-written type, Cursor near head
+                                                                            QUERY PLAN                                                                             
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Result (actual time=0.018..0.018 rows=1 loops=1)
+   Buffers: shared hit=4
+   InitPlan 1 (returns $0)
+     ->  Seq Scan on events (actual time=0.018..0.018 rows=1 loops=1)
+           Filter: ((event_type = ANY ('{Legacy.Thing,Brand.New}'::text[])) AND (ROW(transaction_id, global_position) <= ROW('1667000'::xid8, '4998000'::bigint)))
+           Rows Removed by Filter: 52
+           Buffers: shared hit=4
+ Planning:
+   Buffers: shared hit=4
+ Planning Time: 0.029 ms
+ Execution Time: 0.020 ms
+(11 rows)
+
+                                                                   QUERY PLAN                                                                    
+-------------------------------------------------------------------------------------------------------------------------------------------------
+ Result (actual time=0.007..0.007 rows=1 loops=1)
+   Buffers: shared hit=5
+   InitPlan 1 (returns $1)
+     ->  Nested Loop Semi Join (actual time=0.007..0.007 rows=1 loops=1)
+           Buffers: shared hit=5
+           ->  Function Scan on unnest t (actual time=0.001..0.001 rows=1 loops=1)
+           ->  Index Only Scan using events_type_order on events (actual time=0.006..0.006 rows=1 loops=1)
+                 Index Cond: ((event_type = t.event_type) AND (ROW(transaction_id, global_position) <= ROW('1667000'::xid8, '4998000'::bigint)))
+                 Heap Fetches: 0
+                 Buffers: shared hit=5
+ Planning:
+   Buffers: shared hit=4
+ Planning Time: 0.032 ms
+ Execution Time: 0.012 ms
+(14 rows)
+
+=== A2 Await: retired type, Cursor at its last event, min at head
+                                                                                                                 QUERY PLAN                                                                                                                  
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Result (actual time=495.862..495.863 rows=1 loops=1)
+   Buffers: shared hit=59775 read=132329
+   InitPlan 1 (returns $0)
+     ->  Seq Scan on events (actual time=495.861..495.861 rows=0 loops=1)
+           Filter: ((event_type = ANY ('{Legacy.Thing}'::text[])) AND (ROW(transaction_id, global_position) > ROW('667666'::xid8, '2000000'::bigint)) AND (ROW(transaction_id, global_position) <= ROW('1667666'::xid8, '5000000'::bigint)))
+           Rows Removed by Filter: 5000000
+           Buffers: shared hit=59775 read=132329
+ Planning:
+   Buffers: shared hit=4
+ Planning Time: 0.023 ms
+ Execution Time: 495.869 ms
+(11 rows)
+
+                                                                                                             QUERY PLAN                                                                                                              
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Result (actual time=0.013..0.014 rows=1 loops=1)
+   Buffers: shared hit=4
+   InitPlan 1 (returns $1)
+     ->  Nested Loop Semi Join (actual time=0.013..0.013 rows=0 loops=1)
+           Buffers: shared hit=4
+           ->  Function Scan on unnest t (actual time=0.002..0.002 rows=1 loops=1)
+           ->  Index Only Scan using events_type_order on events (actual time=0.010..0.010 rows=0 loops=1)
+                 Index Cond: ((event_type = t.event_type) AND (ROW(transaction_id, global_position) > ROW('667666'::xid8, '2000000'::bigint)) AND (ROW(transaction_id, global_position) <= ROW('1667666'::xid8, '5000000'::bigint)))
+                 Heap Fetches: 0
+                 Buffers: shared hit=4
+ Planning:
+   Buffers: shared hit=4
+ Planning Time: 0.120 ms
+ Execution Time: 0.024 ms
+(14 rows)
+
+=== R1 read 5 common types from zero: full rows vs keys first
+                                                                                     QUERY PLAN                                                                                      
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Limit (actual time=0.300..0.304 rows=100 loops=1)
+   Buffers: shared hit=203
+   ->  Sort (actual time=0.299..0.301 rows=100 loops=1)
+         Sort Key: events.transaction_id, events.global_position
+         Sort Method: top-N heapsort  Memory: 58kB
+         Buffers: shared hit=203
+         ->  Nested Loop (actual time=0.008..0.219 rows=500 loops=1)
+               Buffers: shared hit=198
+               ->  Function Scan on unnest t (actual time=0.001..0.001 rows=5 loops=1)
+               ->  Limit (actual time=0.007..0.038 rows=100 loops=5)
+                     Buffers: shared hit=198
+                     ->  Index Scan using events_type_order on events (actual time=0.007..0.034 rows=100 loops=5)
+                           Index Cond: ((event_type = t.event_type) AND (ROW(transaction_id, global_position) > ROW('0'::xid8, '0'::bigint)) AND (transaction_id < '2000000'::xid8))
+                           Buffers: shared hit=198
+ Planning:
+   Buffers: shared hit=31
+ Planning Time: 0.091 ms
+ Execution Time: 0.312 ms
+(18 rows)
+
+                                                                                        QUERY PLAN                                                                                         
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Nested Loop (actual time=0.113..0.170 rows=100 loops=1)
+   Buffers: shared hit=424
+   ->  Limit (actual time=0.106..0.111 rows=100 loops=1)
+         Buffers: shared hit=24
+         ->  Sort (actual time=0.106..0.108 rows=100 loops=1)
+               Sort Key: events.transaction_id, events.global_position
+               Sort Method: top-N heapsort  Memory: 30kB
+               Buffers: shared hit=24
+               ->  Nested Loop (actual time=0.009..0.079 rows=500 loops=1)
+                     Buffers: shared hit=24
+                     ->  Function Scan on unnest t (actual time=0.001..0.001 rows=5 loops=1)
+                     ->  Limit (actual time=0.006..0.012 rows=100 loops=5)
+                           Buffers: shared hit=24
+                           ->  Index Only Scan using events_type_order on events (actual time=0.006..0.009 rows=100 loops=5)
+                                 Index Cond: ((event_type = t.event_type) AND (ROW(transaction_id, global_position) > ROW('0'::xid8, '0'::bigint)) AND (transaction_id < '2000000'::xid8))
+                                 Heap Fetches: 0
+                                 Buffers: shared hit=24
+   ->  Index Scan using events_pkey on events ev (actual time=0.000..0.000 rows=1 loops=100)
+         Index Cond: (global_position = events.global_position)
+         Buffers: shared hit=400
+ Planning:
+   Buffers: shared hit=22
+ Planning Time: 0.086 ms
+ Execution Time: 0.179 ms
+(24 rows)
+
+=== G4 generic plans for claim and Await
+                                                QUERY PLAN                                                 
+-----------------------------------------------------------------------------------------------------------
+ Result (actual time=0.004..0.004 rows=1 loops=1)
+   Buffers: shared hit=4
+   InitPlan 1 (returns $0)
+     ->  Index Only Scan using events_type_order on events (actual time=0.004..0.004 rows=0 loops=1)
+           Index Cond: ((event_type = ANY ($1)) AND (ROW(transaction_id, global_position) <= ROW($2, $3)))
+           Heap Fetches: 0
+           Buffers: shared hit=4
+ Planning Time: 0.025 ms
+ Execution Time: 0.008 ms
+(9 rows)
+
+                                                                             QUERY PLAN                                                                             
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Result (actual time=0.004..0.004 rows=1 loops=1)
+   Buffers: shared hit=4
+   InitPlan 1 (returns $0)
+     ->  Index Only Scan using events_type_order on events (actual time=0.004..0.004 rows=0 loops=1)
+           Index Cond: ((event_type = ANY ($1)) AND (ROW(transaction_id, global_position) > ROW($2, $3)) AND (ROW(transaction_id, global_position) <= ROW($4, $5)))
+           Heap Fetches: 0
+           Buffers: shared hit=4
+ Planning Time: 0.019 ms
+ Execution Time: 0.008 ms
+(9 rows)
+
+                                                                                  QUERY PLAN                                                                                  
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Result (actual time=0.003..0.003 rows=1 loops=1)
+   Buffers: shared hit=4
+   InitPlan 1 (returns $1)
+     ->  Nested Loop Semi Join (actual time=0.003..0.003 rows=0 loops=1)
+           Buffers: shared hit=4
+           ->  Function Scan on unnest t (actual time=0.001..0.001 rows=1 loops=1)
+           ->  Index Only Scan using events_type_order on events (actual time=0.002..0.002 rows=0 loops=1)
+                 Index Cond: ((event_type = t.event_type) AND (ROW(transaction_id, global_position) > ROW($2, $3)) AND (ROW(transaction_id, global_position) <= ROW($4, $5)))
+                 Heap Fetches: 0
+                 Buffers: shared hit=4
+ Planning Time: 0.039 ms
+ Execution Time: 0.007 ms
+(12 rows)
+

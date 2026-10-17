@@ -1,0 +1,20 @@
+Time: 0.298 ms
+   name    | consumer_pending 
+-----------+------------------
+ legacy@v1 |                0
+ orders@v2 |                0
+ rare@v1   |                0
+(3 rows)
+
+Time: 5.334 ms
+Time: 0.098 ms
+ERROR:  consumer missing has no cursor row
+CONTEXT:  PL/pgSQL function consumer_pending(text,integer) line 9 at RAISE
+                                                                                          QUERY PLAN                                                                                           
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Limit
+   ->  Index Only Scan using events_type_order on events
+         Index Cond: ((event_type = 'Rare.Early'::text) AND (ROW(transaction_id, global_position) > ROW('17666'::xid8, 50000)) AND (transaction_id < pg_snapshot_xmin(pg_current_snapshot())))
+(3 rows)
+
+Time: 0.203 ms

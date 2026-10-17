@@ -1,0 +1,416 @@
+=== S1 steady poll: rare type, Cursor at its last event, ~5M non-matching above
+                                                                                           QUERY PLAN                                                                                            
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Limit (actual time=0.020..0.021 rows=0 loops=1)
+   Buffers: shared hit=9
+   ->  Sort (actual time=0.020..0.020 rows=0 loops=1)
+         Sort Key: transaction_id, global_position
+         Sort Method: quicksort  Memory: 25kB
+         Buffers: shared hit=9
+         ->  Index Only Scan using events_type_order on events (actual time=0.012..0.012 rows=0 loops=1)
+               Index Cond: ((event_type = ANY ('{Rare.Early}'::text[])) AND (ROW(transaction_id, global_position) > ROW('17666'::xid8, '50000'::bigint)) AND (transaction_id < '2000000'::xid8))
+               Heap Fetches: 0
+               Buffers: shared hit=4
+ Planning:
+   Buffers: shared hit=189
+ Planning Time: 0.236 ms
+ Execution Time: 0.035 ms
+(14 rows)
+
+                                                                                         QUERY PLAN                                                                                          
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Limit (actual time=0.010..0.010 rows=0 loops=1)
+   Buffers: shared hit=4
+   ->  Sort (actual time=0.010..0.010 rows=0 loops=1)
+         Sort Key: events.transaction_id, events.global_position
+         Sort Method: quicksort  Memory: 25kB
+         Buffers: shared hit=4
+         ->  Nested Loop (actual time=0.009..0.009 rows=0 loops=1)
+               Buffers: shared hit=4
+               ->  Function Scan on unnest t (actual time=0.002..0.002 rows=1 loops=1)
+               ->  Limit (actual time=0.006..0.006 rows=0 loops=1)
+                     Buffers: shared hit=4
+                     ->  Index Only Scan using events_type_order on events (actual time=0.005..0.005 rows=0 loops=1)
+                           Index Cond: ((event_type = t.event_type) AND (ROW(transaction_id, global_position) > ROW('17666'::xid8, '50000'::bigint)) AND (transaction_id < '2000000'::xid8))
+                           Heap Fetches: 0
+                           Buffers: shared hit=4
+ Planning:
+   Buffers: shared hit=4
+ Planning Time: 0.044 ms
+ Execution Time: 0.017 ms
+(19 rows)
+
+=== S2 steady poll: two rare types, nothing pending
+                                                                                                   QUERY PLAN                                                                                                    
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Limit (actual time=0.008..0.008 rows=0 loops=1)
+   Buffers: shared hit=8
+   ->  Sort (actual time=0.007..0.007 rows=0 loops=1)
+         Sort Key: transaction_id, global_position
+         Sort Method: quicksort  Memory: 25kB
+         Buffers: shared hit=8
+         ->  Index Only Scan using events_type_order on events (actual time=0.007..0.007 rows=0 loops=1)
+               Index Cond: ((event_type = ANY ('{Rare.Early,Rare.Spread}'::text[])) AND (ROW(transaction_id, global_position) > ROW('1664335'::xid8, '4990007'::bigint)) AND (transaction_id < '2000000'::xid8))
+               Heap Fetches: 0
+               Buffers: shared hit=8
+ Planning:
+   Buffers: shared hit=8
+ Planning Time: 0.021 ms
+ Execution Time: 0.010 ms
+(14 rows)
+
+                                                                                           QUERY PLAN                                                                                            
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Limit (actual time=0.005..0.005 rows=0 loops=1)
+   Buffers: shared hit=8
+   ->  Sort (actual time=0.005..0.005 rows=0 loops=1)
+         Sort Key: events.transaction_id, events.global_position
+         Sort Method: quicksort  Memory: 25kB
+         Buffers: shared hit=8
+         ->  Nested Loop (actual time=0.004..0.004 rows=0 loops=1)
+               Buffers: shared hit=8
+               ->  Function Scan on unnest t (actual time=0.001..0.001 rows=2 loops=1)
+               ->  Limit (actual time=0.002..0.002 rows=0 loops=2)
+                     Buffers: shared hit=8
+                     ->  Index Only Scan using events_type_order on events (actual time=0.001..0.001 rows=0 loops=2)
+                           Index Cond: ((event_type = t.event_type) AND (ROW(transaction_id, global_position) > ROW('1664335'::xid8, '4990007'::bigint)) AND (transaction_id < '2000000'::xid8))
+                           Heap Fetches: 0
+                           Buffers: shared hit=8
+ Planning:
+   Buffers: shared hit=36
+ Planning Time: 0.040 ms
+ Execution Time: 0.008 ms
+(19 rows)
+
+=== S3 catch-up from zero: two common types (~19% of the log)
+                                                            QUERY PLAN                                                             
+-----------------------------------------------------------------------------------------------------------------------------------
+ Limit (actual time=0.009..0.087 rows=100 loops=1)
+   Buffers: shared hit=19
+   ->  Index Scan using events_log_order on events (actual time=0.009..0.084 rows=100 loops=1)
+         Index Cond: ((ROW(transaction_id, global_position) > ROW('0'::xid8, '0'::bigint)) AND (transaction_id < '2000000'::xid8))
+         Filter: (event_type = ANY ('{Order.Placed,Customer.Updated}'::text[]))
+         Rows Removed by Filter: 369
+         Buffers: shared hit=19
+ Planning:
+   Buffers: shared hit=8
+ Planning Time: 0.026 ms
+ Execution Time: 0.091 ms
+(11 rows)
+
+                                                                                     QUERY PLAN                                                                                      
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Limit (actual time=0.072..0.077 rows=100 loops=1)
+   Buffers: shared hit=9
+   ->  Sort (actual time=0.072..0.074 rows=100 loops=1)
+         Sort Key: events.transaction_id, events.global_position
+         Sort Method: quicksort  Memory: 39kB
+         Buffers: shared hit=9
+         ->  Nested Loop (actual time=0.016..0.053 rows=200 loops=1)
+               Buffers: shared hit=9
+               ->  Function Scan on unnest t (actual time=0.001..0.001 rows=2 loops=1)
+               ->  Limit (actual time=0.017..0.023 rows=100 loops=2)
+                     Buffers: shared hit=9
+                     ->  Index Only Scan using events_type_order on events (actual time=0.017..0.019 rows=100 loops=2)
+                           Index Cond: ((event_type = t.event_type) AND (ROW(transaction_id, global_position) > ROW('0'::xid8, '0'::bigint)) AND (transaction_id < '2000000'::xid8))
+                           Heap Fetches: 0
+                           Buffers: shared hit=9
+ Planning:
+   Buffers: shared hit=8
+ Planning Time: 0.027 ms
+ Execution Time: 0.082 ms
+(19 rows)
+
+=== S4 catch-up mid-log: two common types
+                                                                  QUERY PLAN                                                                  
+----------------------------------------------------------------------------------------------------------------------------------------------
+ Limit (actual time=0.011..0.114 rows=100 loops=1)
+   Buffers: shared hit=24
+   ->  Index Scan using events_log_order on events (actual time=0.011..0.110 rows=100 loops=1)
+         Index Cond: ((ROW(transaction_id, global_position) > ROW('834333'::xid8, '2500000'::bigint)) AND (transaction_id < '2000000'::xid8))
+         Filter: (event_type = ANY ('{Order.Placed,Customer.Updated}'::text[]))
+         Rows Removed by Filter: 474
+         Buffers: shared hit=24
+ Planning:
+   Buffers: shared hit=4
+ Planning Time: 0.015 ms
+ Execution Time: 0.117 ms
+(11 rows)
+
+                                                                                           QUERY PLAN                                                                                           
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Limit (actual time=0.064..0.070 rows=100 loops=1)
+   Buffers: shared hit=10
+   ->  Sort (actual time=0.064..0.066 rows=100 loops=1)
+         Sort Key: events.transaction_id, events.global_position
+         Sort Method: quicksort  Memory: 39kB
+         Buffers: shared hit=10
+         ->  Nested Loop (actual time=0.013..0.047 rows=200 loops=1)
+               Buffers: shared hit=10
+               ->  Function Scan on unnest t (actual time=0.000..0.000 rows=2 loops=1)
+               ->  Limit (actual time=0.011..0.020 rows=100 loops=2)
+                     Buffers: shared hit=10
+                     ->  Index Only Scan using events_type_order on events (actual time=0.011..0.017 rows=100 loops=2)
+                           Index Cond: ((event_type = t.event_type) AND (ROW(transaction_id, global_position) > ROW('834333'::xid8, '2500000'::bigint)) AND (transaction_id < '2000000'::xid8))
+                           Heap Fetches: 0
+                           Buffers: shared hit=10
+ Planning:
+   Buffers: shared hit=4
+ Planning Time: 0.022 ms
+ Execution Time: 0.074 ms
+(19 rows)
+
+=== S5 catch-up from zero: two sparse types (~0.06% of the log)
+                                                                                            QUERY PLAN                                                                                            
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Limit (actual time=0.300..0.305 rows=100 loops=1)
+   Buffers: shared hit=33
+   ->  Sort (actual time=0.300..0.302 rows=100 loops=1)
+         Sort Key: transaction_id, global_position
+         Sort Method: top-N heapsort  Memory: 32kB
+         Buffers: shared hit=33
+         ->  Index Only Scan using events_type_order on events (actual time=0.011..0.188 rows=2964 loops=1)
+               Index Cond: ((event_type = ANY ('{Rare.Spread,Misc.T3}'::text[])) AND (ROW(transaction_id, global_position) > ROW('0'::xid8, '0'::bigint)) AND (transaction_id < '2000000'::xid8))
+               Heap Fetches: 0
+               Buffers: shared hit=33
+ Planning:
+   Buffers: shared hit=8
+ Planning Time: 0.018 ms
+ Execution Time: 0.309 ms
+(14 rows)
+
+                                                                                     QUERY PLAN                                                                                      
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Limit (actual time=0.051..0.056 rows=100 loops=1)
+   Buffers: shared hit=9
+   ->  Sort (actual time=0.051..0.053 rows=100 loops=1)
+         Sort Key: events.transaction_id, events.global_position
+         Sort Method: quicksort  Memory: 39kB
+         Buffers: shared hit=9
+         ->  Nested Loop (actual time=0.009..0.035 rows=200 loops=1)
+               Buffers: shared hit=9
+               ->  Function Scan on unnest t (actual time=0.000..0.001 rows=2 loops=1)
+               ->  Limit (actual time=0.008..0.014 rows=100 loops=2)
+                     Buffers: shared hit=9
+                     ->  Index Only Scan using events_type_order on events (actual time=0.008..0.011 rows=100 loops=2)
+                           Index Cond: ((event_type = t.event_type) AND (ROW(transaction_id, global_position) > ROW('0'::xid8, '0'::bigint)) AND (transaction_id < '2000000'::xid8))
+                           Heap Fetches: 0
+                           Buffers: shared hit=9
+ Planning:
+   Buffers: shared hit=8
+ Planning Time: 0.025 ms
+ Execution Time: 0.061 ms
+(19 rows)
+
+=== S6 catch-up from zero: single type
+                                                            QUERY PLAN                                                             
+-----------------------------------------------------------------------------------------------------------------------------------
+ Limit (actual time=0.006..0.134 rows=100 loops=1)
+   Buffers: shared hit=37
+   ->  Index Scan using events_log_order on events (actual time=0.006..0.131 rows=100 loops=1)
+         Index Cond: ((ROW(transaction_id, global_position) > ROW('0'::xid8, '0'::bigint)) AND (transaction_id < '2000000'::xid8))
+         Filter: (event_type = ANY ('{Order.Placed}'::text[]))
+         Rows Removed by Filter: 904
+         Buffers: shared hit=37
+ Planning:
+   Buffers: shared hit=12
+ Planning Time: 0.029 ms
+ Execution Time: 0.138 ms
+(11 rows)
+
+=== S7 catch-up from zero: 5 types incl. the hottest (~99% of the log)
+                                                            QUERY PLAN                                                             
+-----------------------------------------------------------------------------------------------------------------------------------
+ Limit (actual time=0.005..0.017 rows=100 loops=1)
+   Buffers: shared hit=6
+   ->  Index Scan using events_log_order on events (actual time=0.005..0.014 rows=100 loops=1)
+         Index Cond: ((ROW(transaction_id, global_position) > ROW('0'::xid8, '0'::bigint)) AND (transaction_id < '2000000'::xid8))
+         Filter: (event_type = ANY ('{Hot.Ping,Order.LineAdded,Order.Placed,Customer.Updated,Rare.Spread}'::text[]))
+         Buffers: shared hit=6
+ Planning:
+   Buffers: shared hit=8
+ Planning Time: 0.018 ms
+ Execution Time: 0.020 ms
+(10 rows)
+
+                                                                                     QUERY PLAN                                                                                      
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Limit (actual time=0.150..0.155 rows=100 loops=1)
+   Buffers: shared hit=22
+   ->  Sort (actual time=0.150..0.152 rows=100 loops=1)
+         Sort Key: events.transaction_id, events.global_position
+         Sort Method: top-N heapsort  Memory: 33kB
+         Buffers: shared hit=22
+         ->  Nested Loop (actual time=0.012..0.100 rows=500 loops=1)
+               Buffers: shared hit=22
+               ->  Function Scan on unnest t (actual time=0.002..0.002 rows=5 loops=1)
+               ->  Limit (actual time=0.009..0.017 rows=100 loops=5)
+                     Buffers: shared hit=22
+                     ->  Index Only Scan using events_type_order on events (actual time=0.009..0.013 rows=100 loops=5)
+                           Index Cond: ((event_type = t.event_type) AND (ROW(transaction_id, global_position) > ROW('0'::xid8, '0'::bigint)) AND (transaction_id < '2000000'::xid8))
+                           Heap Fetches: 0
+                           Buffers: shared hit=22
+ Planning:
+   Buffers: shared hit=12
+ Planning Time: 0.044 ms
+ Execution Time: 0.160 ms
+(19 rows)
+
+=== P1 pending, cap 10000: rare consumer far behind (0 pending)
+                                                                                           QUERY PLAN                                                                                            
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Aggregate (actual time=0.003..0.003 rows=1 loops=1)
+   Buffers: shared hit=4
+   ->  Limit (actual time=0.002..0.002 rows=0 loops=1)
+         Buffers: shared hit=4
+         ->  Index Only Scan using events_type_order on events (actual time=0.002..0.002 rows=0 loops=1)
+               Index Cond: ((event_type = ANY ('{Rare.Early}'::text[])) AND (ROW(transaction_id, global_position) > ROW('17666'::xid8, '50000'::bigint)) AND (transaction_id < '2000000'::xid8))
+               Heap Fetches: 0
+               Buffers: shared hit=4
+ Planning:
+   Buffers: shared hit=7
+ Planning Time: 0.026 ms
+ Execution Time: 0.008 ms
+(12 rows)
+
+                                                                                         QUERY PLAN                                                                                          
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Aggregate (actual time=0.005..0.006 rows=1 loops=1)
+   Buffers: shared hit=4
+   ->  Nested Loop (actual time=0.003..0.003 rows=1 loops=1)
+         Buffers: shared hit=4
+         ->  Function Scan on unnest t (actual time=0.000..0.001 rows=1 loops=1)
+         ->  Aggregate (actual time=0.002..0.002 rows=1 loops=1)
+               Buffers: shared hit=4
+               ->  Limit (actual time=0.002..0.002 rows=0 loops=1)
+                     Buffers: shared hit=4
+                     ->  Index Only Scan using events_type_order on events (actual time=0.002..0.002 rows=0 loops=1)
+                           Index Cond: ((event_type = t.event_type) AND (ROW(transaction_id, global_position) > ROW('17666'::xid8, '50000'::bigint)) AND (transaction_id < '2000000'::xid8))
+                           Heap Fetches: 0
+                           Buffers: shared hit=4
+ Planning:
+   Buffers: shared hit=13
+ Planning Time: 0.036 ms
+ Execution Time: 0.033 ms
+(17 rows)
+
+=== P2 pending, cap 10000: new version catching up (saturates)
+                                                                                                 QUERY PLAN                                                                                                 
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Aggregate (actual time=1.007..1.007 rows=1 loops=1)
+   Buffers: shared hit=76
+   ->  Limit (actual time=0.007..0.826 rows=10001 loops=1)
+         Buffers: shared hit=76
+         ->  Index Only Scan using events_type_order on events (actual time=0.007..0.535 rows=10001 loops=1)
+               Index Cond: ((event_type = ANY ('{Order.Placed,Customer.Updated}'::text[])) AND (ROW(transaction_id, global_position) > ROW('0'::xid8, '0'::bigint)) AND (transaction_id < '2000000'::xid8))
+               Heap Fetches: 0
+               Buffers: shared hit=76
+ Planning:
+   Buffers: shared hit=8
+ Planning Time: 0.019 ms
+ Execution Time: 1.009 ms
+(12 rows)
+
+                                                                                     QUERY PLAN                                                                                      
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Aggregate (actual time=1.906..1.906 rows=1 loops=1)
+   Buffers: shared hit=140
+   ->  Nested Loop (actual time=1.017..1.905 rows=2 loops=1)
+         Buffers: shared hit=140
+         ->  Function Scan on unnest t (actual time=0.001..0.001 rows=2 loops=1)
+         ->  Aggregate (actual time=0.952..0.952 rows=1 loops=2)
+               Buffers: shared hit=140
+               ->  Limit (actual time=0.007..0.770 rows=10001 loops=2)
+                     Buffers: shared hit=140
+                     ->  Index Only Scan using events_type_order on events (actual time=0.007..0.487 rows=10001 loops=2)
+                           Index Cond: ((event_type = t.event_type) AND (ROW(transaction_id, global_position) > ROW('0'::xid8, '0'::bigint)) AND (transaction_id < '2000000'::xid8))
+                           Heap Fetches: 0
+                           Buffers: shared hit=140
+ Planning:
+   Buffers: shared hit=8
+ Planning Time: 0.032 ms
+ Execution Time: 1.911 ms
+(17 rows)
+
+=== P3 pending, cap 10000: sparse types mid-log (~1.5k pending)
+                                                                                                 QUERY PLAN                                                                                                  
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Aggregate (actual time=0.158..0.158 rows=1 loops=1)
+   Buffers: shared hit=22
+   ->  Limit (actual time=0.008..0.129 rows=1474 loops=1)
+         Buffers: shared hit=22
+         ->  Index Only Scan using events_type_order on events (actual time=0.008..0.081 rows=1474 loops=1)
+               Index Cond: ((event_type = ANY ('{Rare.Spread,Misc.T3}'::text[])) AND (ROW(transaction_id, global_position) > ROW('834333'::xid8, '2500000'::bigint)) AND (transaction_id < '2000000'::xid8))
+               Heap Fetches: 0
+               Buffers: shared hit=22
+ Planning:
+   Buffers: shared hit=4
+ Planning Time: 0.018 ms
+ Execution Time: 0.161 ms
+(12 rows)
+
+                                                                                           QUERY PLAN                                                                                           
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Aggregate (actual time=0.155..0.155 rows=1 loops=1)
+   Buffers: shared hit=22
+   ->  Nested Loop (actual time=0.028..0.155 rows=2 loops=1)
+         Buffers: shared hit=22
+         ->  Function Scan on unnest t (actual time=0.000..0.001 rows=2 loops=1)
+         ->  Aggregate (actual time=0.077..0.077 rows=1 loops=2)
+               Buffers: shared hit=22
+               ->  Limit (actual time=0.004..0.062 rows=737 loops=2)
+                     Buffers: shared hit=22
+                     ->  Index Only Scan using events_type_order on events (actual time=0.004..0.040 rows=737 loops=2)
+                           Index Cond: ((event_type = t.event_type) AND (ROW(transaction_id, global_position) > ROW('834333'::xid8, '2500000'::bigint)) AND (transaction_id < '2000000'::xid8))
+                           Heap Fetches: 0
+                           Buffers: shared hit=22
+ Planning:
+   Buffers: shared hit=4
+ Planning Time: 0.021 ms
+ Execution Time: 0.159 ms
+(17 rows)
+
+=== C1 claim EXISTS: added types, one never written, Cursor mid-log
+                                                                           QUERY PLAN                                                                            
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Result (actual time=0.009..0.009 rows=1 loops=1)
+   Buffers: shared hit=9
+   InitPlan 1
+     ->  Index Only Scan using events_type_order on events (actual time=0.008..0.008 rows=1 loops=1)
+           Index Cond: ((event_type = ANY ('{Misc.T3,Brand.New}'::text[])) AND (ROW(transaction_id, global_position) <= ROW('834333'::xid8, '2500000'::bigint)))
+           Heap Fetches: 0
+           Buffers: shared hit=9
+ Planning Time: 0.015 ms
+ Execution Time: 0.011 ms
+(9 rows)
+
+=== C2 claim EXISTS: only never-written types
+                                                                             QUERY PLAN                                                                              
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Result (actual time=0.003..0.003 rows=1 loops=1)
+   Buffers: shared hit=4
+   InitPlan 1
+     ->  Index Only Scan using events_type_order on events (actual time=0.002..0.002 rows=0 loops=1)
+           Index Cond: ((event_type = ANY ('{Brand.New,Brand.Other}'::text[])) AND (ROW(transaction_id, global_position) <= ROW('834333'::xid8, '2500000'::bigint)))
+           Heap Fetches: 0
+           Buffers: shared hit=4
+ Planning Time: 0.012 ms
+ Execution Time: 0.004 ms
+(9 rows)
+
+=== A1 Await: rare consumer far behind, min = head of another type
+                                                                                                                 QUERY PLAN                                                                                                                 
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Result (actual time=0.002..0.002 rows=1 loops=1)
+   Buffers: shared hit=4
+   InitPlan 1
+     ->  Index Only Scan using events_type_order on events (actual time=0.002..0.002 rows=0 loops=1)
+           Index Cond: ((event_type = ANY ('{Rare.Early}'::text[])) AND (ROW(transaction_id, global_position) > ROW('17666'::xid8, '50000'::bigint)) AND (ROW(transaction_id, global_position) <= ROW('1667666'::xid8, '5000000'::bigint)))
+           Heap Fetches: 0
+           Buffers: shared hit=4
+ Planning:
+   Buffers: shared hit=4
+ Planning Time: 0.015 ms
+ Execution Time: 0.004 ms
+(11 rows)
+
