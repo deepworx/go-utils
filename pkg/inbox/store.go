@@ -1,0 +1,138 @@
+// Package inbox is a durable, deduplicated, leased work queue in Postgres
+// for incoming external messages such as webhooks. It is independent of the
+// event log.
+//
+// A Store inserts Messages inside the caller's transaction, deduplicated by
+// (Source, Key). A Worker per Source claims due messages, runs its Handler
+// and settles each message as done, ignored, Parked or due for a retry.
+// Every pod runs every Source's Worker; rows are claimed with
+// FOR UPDATE SKIP LOCKED and fenced by a claim generation, so a Worker whose
+// claim expired can never settle a message claimed again elsewhere. There is
+// no ordering guarantee.
+package inbox
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"go.opentelemetry.io/otel/propagation"
+
+	"github.com/deepworx/go-utils/pkg/postgres"
+	"github.com/deepworx/go-utils/pkg/postgres/notify"
+)
+
+const defaultSchema = "public"
+
+// Message is an incoming external message.
+type Message struct {
+	// Source names the origin of the message, such as one webhook provider.
+	// Required.
+	Source string
+	// Key identifies the message within its Source. Required.
+	Key string
+	// Type classifies the message for the Handler. Required.
+	Type string
+	// Tenant is the message's Tenant, or empty for none.
+	Tenant string
+	// Payload is the raw message body.
+	Payload []byte
+}
+
+func (m Message) validate() error {
+	switch {
+	case m.Source == "":
+		return fmt.Errorf("%w: empty source", ErrInvalidMessage)
+	case m.Key == "":
+		return fmt.Errorf("%w: empty key", ErrInvalidMessage)
+	case m.Type == "":
+		return fmt.Errorf("%w: empty type", ErrInvalidMessage)
+	}
+	return nil
+}
+
+// StoreConfig configures a Store.
+type StoreConfig struct {
+	// Schema qualifies the inbox_messages table and derives the notify
+	// channel <schema>.inbox. Defaults to public.
+	Schema string
+}
+
+// StoreOption configures a Store beyond StoreConfig.
+type StoreOption func(*Store)
+
+// WithClock sets the time source for received, due, claim and settle
+// times. It defaults to time.Now().UTC(). Workers use their Store's clock.
+func WithClock(now func() time.Time) StoreOption {
+	return func(s *Store) { s.now = now }
+}
+
+// Store reads and writes the inbox_messages table.
+type Store struct {
+	pool    *pgxpool.Pool
+	table   string
+	channel string
+	now     func() time.Time
+}
+
+// NewStore returns a Store on pool. It fails with notify.ErrInvalidChannel
+// when the schema makes the derived channel name invalid.
+func NewStore(pool *pgxpool.Pool, cfg StoreConfig, opts ...StoreOption) (*Store, error) {
+	if cfg.Schema == "" {
+		cfg.Schema = defaultSchema
+	}
+	channel := cfg.Schema + ".inbox"
+	if err := notify.CheckChannel(channel); err != nil {
+		return nil, fmt.Errorf("inbox: schema %q: %w", cfg.Schema, err)
+	}
+	s := &Store{
+		pool:    pool,
+		table:   pgx.Identifier{cfg.Schema, "inbox_messages"}.Sanitize(),
+		channel: channel,
+		now:     func() time.Time { return time.Now().UTC() },
+	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s, nil
+}
+
+// Insert stores m as a pending message, inside the transaction carried by
+// ctx when there is one. It reports false when a message with the same
+// Source and Key already exists, whatever its status. It fails with
+// ErrInvalidMessage when Source, Key or Type is empty. The current span's
+// trace context is stored so the handling span can link to it.
+func (s *Store) Insert(ctx context.Context, m Message) (inserted bool, err error) {
+	if err := m.validate(); err != nil {
+		return false, err
+	}
+	payload := m.Payload
+	if payload == nil {
+		payload = []byte{}
+	}
+	now := s.now()
+	var id int64
+	err = postgres.Conn(ctx, s.pool).QueryRow(ctx, `
+		INSERT INTO `+s.table+` (source, key, type, tenant_id, payload, next_attempt_at, received_at, trace_context)
+		VALUES ($1, $2, $3, NULLIF($4, ''), $5, $6, $6, NULLIF($7, ''))
+		ON CONFLICT (source, key) DO NOTHING
+		RETURNING id`,
+		m.Source, m.Key, m.Type, m.Tenant, payload, now, traceParent(ctx),
+	).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("inbox: insert %s/%s: %w", m.Source, m.Key, err)
+	}
+	return true, nil
+}
+
+func traceParent(ctx context.Context) string {
+	carrier := propagation.MapCarrier{}
+	propagation.TraceContext{}.Inject(ctx, carrier)
+	return carrier.Get("traceparent")
+}
