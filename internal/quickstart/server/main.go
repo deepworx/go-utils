@@ -110,7 +110,7 @@ func serve(ctx context.Context, in serveInput) error {
 		Mailer:     in.Mailer,
 	})
 	if err != nil {
-		return err
+		return fmt.Errorf("app: %w", err)
 	}
 
 	inboxStore, err := inbox.NewStore(in.Pool, inbox.StoreConfig{Schema: in.Schema})
@@ -139,6 +139,9 @@ func serve(ctx context.Context, in serveInput) error {
 	srv := &http.Server{
 		Handler:           app.Metadata(in.Tenant, mux),
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       2 * time.Minute,
 	}
 
 	g, ctx := errgroup.WithContext(ctx)

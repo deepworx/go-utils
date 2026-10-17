@@ -125,11 +125,13 @@ func ParsePosition(s string) (eventstore.Cursor, error) {
 func writeError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, todo.ErrNoTitle):
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		http.Error(w, todo.ErrNoTitle.Error(), http.StatusBadRequest)
 	case errors.Is(err, eventstore.ErrNotFound):
 		http.Error(w, "task not found", http.StatusNotFound)
-	case errors.Is(err, todo.ErrAlreadyDone), errors.Is(err, eventstore.ErrConcurrencyConflict):
-		http.Error(w, err.Error(), http.StatusConflict)
+	case errors.Is(err, todo.ErrAlreadyDone):
+		http.Error(w, todo.ErrAlreadyDone.Error(), http.StatusConflict)
+	case errors.Is(err, eventstore.ErrConcurrencyConflict):
+		http.Error(w, "task changed concurrently, retry", http.StatusConflict)
 	default:
 		slog.ErrorContext(r.Context(), "request failed", slog.String("error", err.Error()))
 		http.Error(w, "internal error", http.StatusInternalServerError)
