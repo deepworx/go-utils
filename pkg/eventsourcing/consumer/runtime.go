@@ -73,6 +73,9 @@ type move struct {
 type record struct {
 	env     eventstore.Envelope
 	payload eventstore.Payload
+	// traceContext is the stored traceparent of the send span that
+	// appended the event, or "".
+	traceContext string
 }
 
 // PendingCap caps Status.Pending: a Consumer with more pending events

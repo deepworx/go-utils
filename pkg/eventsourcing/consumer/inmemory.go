@@ -37,6 +37,7 @@ type memFeed interface {
 	Changed() <-chan struct{}
 	Next(after eventstore.Cursor, types []string) (eventstore.Envelope, eventstore.Payload, bool)
 	Head(types []string) eventstore.Cursor
+	TraceContext(at eventstore.Cursor) string
 }
 
 type memCursor struct {
@@ -207,7 +208,7 @@ func (p *memPort) read(_ context.Context, in readInput) ([]record, error) {
 		if !ok {
 			break
 		}
-		records = append(records, record{env: env, payload: payload})
+		records = append(records, record{env: env, payload: payload, traceContext: p.rt.feed.TraceContext(env.Cursor)})
 		after = env.Cursor
 	}
 	return records, nil

@@ -89,3 +89,19 @@ func (i Instrument) Int64Gauge(m metric.Meter) (metric.Int64Gauge, error) {
 func (i Instrument) Float64Gauge(m metric.Meter) (metric.Float64Gauge, error) {
 	return m.Float64Gauge(i.Name, metric.WithUnit(i.Unit), metric.WithDescription(i.Description))
 }
+
+// Int64ObservableGauge creates the instrument as an asynchronous int64
+// gauge. An owner-only gauge registers its callback only while the lock or
+// lease is held, so a pod that loses it stops reporting the series.
+func (i Instrument) Int64ObservableGauge(m metric.Meter, opts ...metric.Int64ObservableGaugeOption) (metric.Int64ObservableGauge, error) {
+	opts = append([]metric.Int64ObservableGaugeOption{metric.WithUnit(i.Unit), metric.WithDescription(i.Description)}, opts...)
+	return m.Int64ObservableGauge(i.Name, opts...)
+}
+
+// Float64ObservableGauge creates the instrument as an asynchronous float64
+// gauge. An owner-only gauge registers its callback only while the lock or
+// lease is held, so a pod that loses it stops reporting the series.
+func (i Instrument) Float64ObservableGauge(m metric.Meter, opts ...metric.Float64ObservableGaugeOption) (metric.Float64ObservableGauge, error) {
+	opts = append([]metric.Float64ObservableGaugeOption{metric.WithUnit(i.Unit), metric.WithDescription(i.Description)}, opts...)
+	return m.Float64ObservableGauge(i.Name, opts...)
+}

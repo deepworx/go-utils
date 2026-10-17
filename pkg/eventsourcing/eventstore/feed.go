@@ -101,6 +101,19 @@ func (f memFeed) Head(types []string) Cursor {
 	return head
 }
 
+// TraceContext returns the stored traceparent of the committed event at
+// the Cursor at, or "" when there is none.
+func (f memFeed) TraceContext(at Cursor) string {
+	l := f.log
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	i, found := slices.BinarySearchFunc(l.all, at, compareRecord)
+	if !found {
+		return ""
+	}
+	return l.all[i].traceContext
+}
+
 // ranges returns the Cursor-ordered record lists to read for types. The
 // caller holds l.mu.
 func (l *memLog) ranges(types []string) [][]memRecord {

@@ -28,7 +28,9 @@ func (c *Consumer) Run(ctx context.Context) error {
 		leaseCtx, release, err := c.port.acquire(ctx)
 		switch {
 		case err == nil:
+			stopGauges := c.inst.reportGauges(c.port.status)
 			c.runHeld(leaseCtx)
+			stopGauges()
 			release()
 		case errors.Is(err, ErrRunning):
 		default:
@@ -161,9 +163,11 @@ func (c *Consumer) stoppedError(s *Stop) error {
 // process handles records, which follow the Cursor from, and advances the
 // Cursor past every event it handled.
 func (c *Consumer) process(ctx context.Context, from eventstore.Cursor, records []record) error {
+	start := time.Now()
 	ctx, span := c.tracer.Start(ctx, telemetry.SpanProcess(c.name),
 		trace.WithNewRoot(),
 		trace.WithSpanKind(trace.SpanKindConsumer),
+		trace.WithLinks(links(records)...),
 		trace.WithAttributes(
 			telemetry.AttrConsumer.String(c.name),
 			telemetry.AttrBatchSize.Int(len(records)),
@@ -177,6 +181,7 @@ func (c *Consumer) process(ctx context.Context, from eventstore.Cursor, records 
 	} else {
 		err = c.processOwn(ctx, from, records)
 	}
+	c.inst.batchDuration.Record(ctx, time.Since(start).Seconds(), c.inst.labels)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
@@ -287,12 +292,15 @@ func eventAttrs(env eventstore.Envelope) []any {
 		telemetry.LogStreamID, env.StreamID,
 		telemetry.LogEventID, env.EventID,
 		telemetry.LogEventType, env.EventType,
+		telemetry.LogPosition, env.Cursor.Position,
 	}
 }
 
 // handle decodes r and runs the handler with the event's Tenant and
 // Correlation in ctx. A decode error or a panic is Permanent.
 func (c *Consumer) handle(ctx context.Context, r record) (err error) {
+	start := time.Now()
+	defer func() { c.inst.processDuration.Record(ctx, time.Since(start).Seconds(), c.inst.labels) }()
 	event, err := c.port.codec().Decode(r.payload)
 	if err != nil {
 		return Permanent(fmt.Errorf("event %s: %w", r.env.EventID, err))
