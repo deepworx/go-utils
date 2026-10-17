@@ -102,6 +102,19 @@ func TestSetup(t *testing.T) {
 	}
 }
 
+func TestSetup_InstallsContextHandler(t *testing.T) {
+	oldLogger := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(oldLogger) })
+
+	if err := Setup(DefaultConfig()); err != nil {
+		t.Fatalf("Setup() unexpected error: %v", err)
+	}
+
+	if _, ok := slog.Default().Handler().(*ContextHandler); !ok {
+		t.Errorf("default handler = %T, want *ContextHandler", slog.Default().Handler())
+	}
+}
+
 func TestParseLevel(t *testing.T) {
 	t.Parallel()
 
