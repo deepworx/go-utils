@@ -75,9 +75,9 @@ func newPgQueries(schema string) pgQueries {
 		version: `SELECT COALESCE(max(stream_position), 0) FROM ` + table + `
 			WHERE tenant_id = $1 AND stream_id = $2`,
 		insert: `INSERT INTO ` + table + ` (event_id, tenant_id, stream_type, stream_id, stream_position,
-				event_type, schema_version, event_data, actor, correlation_id, causation_id, recorded_at)
+				event_type, schema_version, event_data, actor, correlation_id, causation_id, trace_context, recorded_at)
 			SELECT e.event_id, $1, $2, $3, $4 + e.ord, e.event_type, e.schema_version, e.event_data,
-				$5, $6, $7, $8
+				$5, $6, $7, NULLIF($13, ''), $8
 			FROM unnest($9::uuid[], $10::text[], $11::int[], $12::bytea[]) WITH ORDINALITY
 				AS e(event_id, event_type, schema_version, event_data, ord)
 			ORDER BY e.ord
@@ -171,7 +171,7 @@ func (s *PgStore) append(ctx context.Context, in appendInput) (Cursor, error) {
 	rows, err := tx.Query(ctx, s.queries.insert,
 		in.tx.tenant, in.streamType, in.tx.stream, in.expected,
 		meta.actor, meta.correlation, causation, s.clock(),
-		batch.ids, batch.types, batch.versions, batch.data)
+		batch.ids, batch.types, batch.versions, batch.data, in.traceContext)
 	if err != nil {
 		return Cursor{}, fmt.Errorf("append to %s: %w", in.tx.stream, err)
 	}

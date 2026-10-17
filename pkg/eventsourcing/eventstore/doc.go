@@ -33,4 +33,12 @@
 // (ctxutil.WithActor, else Claims.UserID), Correlation
 // (ctxutil.WithCorrelationID, else the request ID, else a UUIDv7 per Command
 // transaction) and Causation (ctxutil.WithCausationID), as ADR-0010 defines.
+//
+// Create and Update are traced as an INTERNAL "create/update {stream type}"
+// span with a PRODUCER "send {stream type}" child, whose W3C traceparent is
+// stored with each event so Consumers can link to it (ADR-0004). Loads and
+// Commands also record the eventsourcing.aggregate.load.* and
+// eventsourcing.command.duration histograms. Spans and metrics use the OTel
+// globals unless WithTracerProvider or WithMeterProvider is passed to
+// NewRepository.
 package eventstore

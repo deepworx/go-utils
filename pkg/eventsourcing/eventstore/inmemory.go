@@ -46,10 +46,11 @@ type streamKey struct {
 }
 
 // memRecord is an event as stored: its Envelope without the decoded Event,
-// plus its payload.
+// plus its payload and the traceparent of the send span that appended it.
 type memRecord struct {
-	env     Envelope
-	payload Payload
+	env          Envelope
+	payload      Payload
+	traceContext string
 }
 
 type memLog struct {
@@ -132,7 +133,14 @@ func (s *InMemoryStore) append(ctx context.Context, in appendInput) (Cursor, err
 		CausationID:   meta.causation,
 		RecordedAt:    s.clock(),
 	}
-	last, opened, err := s.log.stage(stageInput{tx: in.tx, expected: in.expected, template: template, payloads: payloads, eventIDs: eventIDs})
+	last, opened, err := s.log.stage(stageInput{
+		tx:           in.tx,
+		expected:     in.expected,
+		template:     template,
+		payloads:     payloads,
+		eventIDs:     eventIDs,
+		traceContext: in.traceContext,
+	})
 	if err != nil {
 		return Cursor{}, err
 	}
@@ -144,11 +152,12 @@ func (s *InMemoryStore) append(ctx context.Context, in appendInput) (Cursor, err
 }
 
 type stageInput struct {
-	tx       *commandTx
-	expected int
-	template Envelope
-	payloads []Payload
-	eventIDs []uuid.UUID
+	tx           *commandTx
+	expected     int
+	template     Envelope
+	payloads     []Payload
+	eventIDs     []uuid.UUID
+	traceContext string
 }
 
 // stage adds records to the pending appends of in.tx. opened reports
@@ -179,7 +188,7 @@ func (l *memLog) stage(in stageInput) (last Cursor, opened bool, err error) {
 		env.EventID = in.eventIDs[i]
 		env.StreamPosition = in.expected + i + 1
 		env.EventType = payload.EventType
-		p.records = append(p.records, memRecord{env: env, payload: payload})
+		p.records = append(p.records, memRecord{env: env, payload: payload, traceContext: in.traceContext})
 		last = env.Cursor
 	}
 	return last, opened, nil
