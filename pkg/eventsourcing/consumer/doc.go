@@ -25,6 +25,13 @@
 // errors stop it at once. A Stopped Consumer stays at its Cursor until
 // Runtime.Resume.
 //
+// The filter is stored on the Cursor and checked when a release changes it
+// (ADR-0006). Removed types are always accepted. An OwnTransaction Consumer
+// handles added types from its Cursor onwards. A Transactional Consumer
+// accepts added types only when no event of them lies at or below its
+// Cursor; otherwise it goes Stopped, and the change needs a new Projection
+// version. Resume does not skip this check.
+//
 // The Runtime keeps the Cursors. NewPgRuntime runs on an eventstore.PgStore
 // with Cursors in the consumer_cursors table; handlers write through
 // postgres.Conn, which joins the Cursor transaction. Each Consumer runs under
@@ -44,4 +51,16 @@
 //
 // Tests and one-shot jobs call Drain, which processes synchronously up to
 // the head of the log at the time of the call.
+//
+// # Observability
+//
+// Each batch runs in a CONSUMER span "process {consumer}". It is a new
+// root, linked to the send spans that appended up to 128 of its events.
+// WithEventSpans adds an INTERNAL span "handle {event type}" per event.
+// The histograms eventsourcing.consumer.batch.duration and
+// eventsourcing.consumer.process.duration carry only the Consumer's name.
+// While Run holds the lease, the gauges eventsourcing.consumer.pending,
+// eventsourcing.consumer.lag and eventsourcing.consumer.stopped are polled
+// from Status at each metric collection, so only the lease owner reports
+// them; Drain does not. A PgRuntime reports eventsourcing.xmin.age.
 package consumer

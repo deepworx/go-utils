@@ -4,15 +4,19 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.opentelemetry.io/otel/metric"
 
 	"github.com/deepworx/go-utils/internal/storehook"
+	"github.com/deepworx/go-utils/internal/telemetry"
 	"github.com/deepworx/go-utils/pkg/eventsourcing/eventstore"
 	"github.com/deepworx/go-utils/pkg/postgres"
 	"github.com/deepworx/go-utils/pkg/postgres/lease"
@@ -41,6 +45,9 @@ type PgRuntimeConfig struct {
 	// Claims grants each Consumer its lease. Required, and Claims.Run must
 	// be running.
 	Claims *lease.Claims
+	// MeterProvider records the eventsourcing.xmin.age gauge. Optional: the
+	// default is the OTel global.
+	MeterProvider metric.MeterProvider
 }
 
 // PgRuntime runs Consumers on an eventstore.PgStore. Cursors live in the
@@ -86,6 +93,11 @@ func NewPgRuntime(cfg PgRuntimeConfig) (*PgRuntime, error) {
 	}
 	store := src.(pgSource)
 	schema := store.Schema()
+	reportXminAge(telemetry.Providers{MeterProvider: cfg.MeterProvider}.Meter(scope), func(ctx context.Context) (int64, error) {
+		var age int64
+		err := cfg.Pool.QueryRow(ctx, xminAgeQuery).Scan(&age)
+		return age, err
+	})
 	return &PgRuntime{
 		pool:     cfg.Pool,
 		schema:   schema,
@@ -133,6 +145,7 @@ func (rt *PgRuntime) attach(in attachInput) (port, error) {
 		rt:        rt,
 		name:      in.name,
 		types:     types,
+		mode:      in.mode,
 		seed:      in.seedAtHead,
 		wake:      make(chan struct{}, 1),
 		resumedCh: make(chan struct{}, 1),
@@ -153,7 +166,10 @@ type pgPort struct {
 	rt    *PgRuntime
 	name  string
 	types []string
+	mode  Mode
 	seed  bool
+	// held is set while this port holds the lease.
+	held atomic.Bool
 	// wake receives when a NOTIFY (or Gap) arrived on the subscription of
 	// the current lease.
 	wake      chan struct{}
@@ -169,11 +185,7 @@ func (p *pgPort) acquire(ctx context.Context) (context.Context, func(), error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	if err := p.seedCursor(leaseCtx); err != nil {
-		l.Release()
-		return nil, nil, fmt.Errorf("seed cursor: %w", err)
-	}
-	if _, err := p.rt.pool.Exec(leaseCtx, p.rt.queries.claim, p.name, p.types); err != nil {
+	if err := p.claimFilter(leaseCtx); err != nil {
 		l.Release()
 		return nil, nil, fmt.Errorf("claim cursor: %w", err)
 	}
@@ -182,27 +194,15 @@ func (p *pgPort) acquire(ctx context.Context) (context.Context, func(), error) {
 		l.Release()
 		return nil, nil, err
 	}
+	p.held.Store(true)
 	var once sync.Once
 	return leaseCtx, func() {
 		once.Do(func() {
+			p.held.Store(false)
 			stopWake()
 			l.Release()
 		})
 	}, nil
-}
-
-// seedCursor creates a missing Cursor row at the head of the log when the
-// Consumer seeds at its head.
-func (p *pgPort) seedCursor(ctx context.Context) error {
-	if !p.seed {
-		return nil
-	}
-	head, err := p.head(ctx)
-	if err != nil {
-		return err
-	}
-	_, err = p.rt.pool.Exec(ctx, p.rt.queries.seed, p.name, p.types, xid(head), head.Position)
-	return err
 }
 
 // tryAcquire takes the Consumer's lease, waiting up to connectWait for
@@ -263,20 +263,101 @@ func (p *pgPort) subscribe(ctx context.Context) (stop func(), err error) {
 	}, nil
 }
 
+// claimFilter creates the Cursor row with the configured filter, or
+// records a changed filter on it. It stops the Consumer instead when the
+// change would leave a gap. A Stopped Cursor is checked again once resumed.
+// createCursor creates the missing Cursor row, at the head of the log when
+// the Consumer seeds at its head.
+func (p *pgPort) createCursor(ctx context.Context, tx pgx.Tx) error {
+	if !p.seed {
+		_, err := tx.Exec(ctx, p.rt.queries.claim, p.name, p.types)
+		return err
+	}
+	head, err := p.head(ctx)
+	if err != nil {
+		return fmt.Errorf("seed cursor: %w", err)
+	}
+	_, err = tx.Exec(ctx, p.rt.queries.seed, p.name, p.types, xid(head), head.Position)
+	return err
+}
+
+func (p *pgPort) claimFilter(ctx context.Context) error {
+	return pgx.BeginFunc(ctx, p.rt.pool, func(tx pgx.Tx) error {
+		var (
+			cursor  eventstore.Cursor
+			stored  []string
+			stopped bool
+		)
+		err := tx.QueryRow(ctx, p.rt.queries.lockCursor, p.name).
+			Scan(&cursor.TransactionID, &cursor.Position, &stored, &stopped)
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			return p.createCursor(ctx, tx)
+		case err != nil:
+			return err
+		case stopped || slices.Equal(stored, p.types):
+			return nil
+		}
+		change := diffFilter(stored, p.types)
+		if change.needsHistoryCheck(p.mode) {
+			gap, err := p.hasHistory(ctx, tx, change, cursor)
+			if err != nil {
+				return fmt.Errorf("check filter change: %w", err)
+			}
+			if gap {
+				_, err := tx.Exec(ctx, p.rt.queries.stop, p.name, time.Now(), change.cause())
+				return err
+			}
+		}
+		_, err = tx.Exec(ctx, p.rt.queries.setFilter, p.name, p.types)
+		return err
+	})
+}
+
+// hasHistory reports whether an event of a type added by f lies at or below
+// upTo.
+func (p *pgPort) hasHistory(ctx context.Context, tx pgx.Tx, f filterChange, upTo eventstore.Cursor) (bool, error) {
+	query, types := p.rt.queries.historyFiltered, f.added
+	if f.widened {
+		query, types = p.rt.queries.historyOutside, f.stored
+	}
+	var found bool
+	err := tx.QueryRow(ctx, query, types, xid(upTo), upTo.Position).Scan(&found)
+	return found, err
+}
+
+// load reads the Cursor. While this port holds the lease, a filter that
+// differs from the stored one is claimed first, so a Resume can't skip the
+// filter check.
 func (p *pgPort) load(ctx context.Context) (cursorState, error) {
+	state, stored, err := p.loadRow(ctx)
+	if err != nil || !p.held.Load() || state.stopped != nil || slices.Equal(stored, p.types) {
+		return state, err
+	}
+	if err := p.claimFilter(ctx); err != nil {
+		return cursorState{}, fmt.Errorf("claim cursor: %w", err)
+	}
+	state, _, err = p.loadRow(ctx)
+	return state, err
+}
+
+// loadRow reads the Cursor and its stored filter. A missing row reads as a
+// zero Cursor whose filter equals the configured one.
+func (p *pgPort) loadRow(ctx context.Context) (cursorState, []string, error) {
 	var (
 		state     cursorState
+		stored    []string
 		stopped   bool
 		stoppedAt *time.Time
 		cause     *string
 	)
 	err := p.rt.pool.QueryRow(ctx, p.rt.queries.load, p.name).
-		Scan(&state.cursor.TransactionID, &state.cursor.Position, &stopped, &stoppedAt, &cause)
+		Scan(&state.cursor.TransactionID, &state.cursor.Position, &stored, &stopped, &stoppedAt, &cause)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
-		return cursorState{}, nil
+		return cursorState{}, p.types, nil
 	case err != nil:
-		return cursorState{}, err
+		return cursorState{}, nil, err
 	}
 	if stopped {
 		state.stopped = &Stop{}
@@ -287,7 +368,7 @@ func (p *pgPort) load(ctx context.Context) (cursorState, error) {
 			state.stopped.Cause = *cause
 		}
 	}
-	return state, nil
+	return state, stored, nil
 }
 
 func (p *pgPort) read(ctx context.Context, in readInput) ([]record, error) {
@@ -304,13 +385,14 @@ func (p *pgPort) read(ctx context.Context, in readInput) ([]record, error) {
 
 func scanRecord(row pgx.CollectableRow) (record, error) {
 	var (
-		r         record
-		causation *uuid.UUID
+		r            record
+		causation    *uuid.UUID
+		traceContext *string
 	)
 	err := row.Scan(&r.env.Cursor.TransactionID, &r.env.Cursor.Position, &r.env.EventID, &r.env.TenantID,
 		&r.env.StreamType, &r.env.StreamID, &r.env.StreamPosition, &r.payload.EventType,
 		&r.payload.SchemaVersion, &r.payload.Data, &r.env.Actor, &r.env.CorrelationID, &causation,
-		&r.env.RecordedAt)
+		&r.env.RecordedAt, &traceContext)
 	if err != nil {
 		return record{}, err
 	}
@@ -318,6 +400,9 @@ func scanRecord(row pgx.CollectableRow) (record, error) {
 	r.env.RecordedAt = r.env.RecordedAt.UTC()
 	if causation != nil {
 		r.env.CausationID = *causation
+	}
+	if traceContext != nil {
+		r.traceContext = *traceContext
 	}
 	return r, nil
 }
@@ -362,6 +447,25 @@ func (p *pgPort) status(ctx context.Context) (Status, error) {
 	return s, nil
 }
 
+func (p *pgPort) frontier(ctx context.Context, after eventstore.Cursor) (frontier, error) {
+	query, args := p.rt.queries.frontier, []any{xid(after), after.Position}
+	if len(p.types) > 0 {
+		query, args = p.rt.queries.frontierFiltered, append([]any{p.types}, args...)
+	}
+	var (
+		f       frontier
+		nextXID *uint64
+		nextPos *int64
+	)
+	if err := p.rt.pool.QueryRow(ctx, query, args...).Scan(&f.xmin, &nextXID, &nextPos); err != nil {
+		return frontier{}, err
+	}
+	if nextXID != nil && nextPos != nil {
+		f.next = eventstore.Cursor{TransactionID: *nextXID, Position: *nextPos}
+	}
+	return f, nil
+}
+
 func (p *pgPort) transact(ctx context.Context, fn func(ctx context.Context) error) error {
 	return p.rt.uow.Execute(ctx, fn)
 }
@@ -404,12 +508,25 @@ func xid(c eventstore.Cursor) string {
 // unfiltered ones read the log-order index. Both only see events below
 // pg_snapshot_xmin.
 type pgQueries struct {
-	claim, seed, load, advance, stop, resume string
+	claim, seed, lockCursor, setFilter, load, advance, stop, resume string
+
+	// historyFiltered and historyOutside check for events of the given
+	// types, or of any type outside them, at or below a Cursor.
+	historyFiltered, historyOutside string
 
 	read, readFiltered       string
 	head, headFiltered       string
 	pending, pendingFiltered string
+	// frontier reads pg_snapshot_xmin and the first matching event after
+	// the Cursor, visible or not, in one snapshot.
+	frontier, frontierFiltered string
 }
+
+// xminAgeQuery counts the transaction IDs assigned since the oldest one
+// still running in the cluster, the transactions that hold back what
+// Consumers see.
+const xminAgeQuery = `SELECT (pg_snapshot_xmax(s)::text::bigint - pg_snapshot_xmin(s)::text::bigint)
+	FROM pg_current_snapshot() s`
 
 const visible = `e.transaction_id < pg_snapshot_xmin(pg_current_snapshot())`
 
@@ -418,7 +535,7 @@ func newPgQueries(schema string) pgQueries {
 	cursors := pgx.Identifier{schema, "consumer_cursors"}.Sanitize()
 	columns := `e.transaction_id::text::numeric, e.global_position, e.event_id, e.tenant_id,
 		e.stream_type, e.stream_id, e.stream_position, e.event_type, e.schema_version, e.event_data,
-		e.actor, e.correlation_id, e.causation_id, e.recorded_at`
+		e.actor, e.correlation_id, e.causation_id, e.recorded_at, e.trace_context`
 	order := `ORDER BY e.transaction_id, e.global_position`
 	orderDesc := `ORDER BY e.transaction_id DESC, e.global_position DESC`
 	// after binds the Cursor to $n (transaction ID) and $n+1 (position).
@@ -437,13 +554,21 @@ func newPgQueries(schema string) pgQueries {
 	perType := func(inner string) string {
 		return `FROM unnest($1::text[]) AS t(event_type) CROSS JOIN LATERAL (` + inner + `) e`
 	}
+	withXmin := func(next string) string {
+		return `SELECT pg_snapshot_xmin(pg_current_snapshot())::text::numeric,
+			n.transaction_id::text::numeric, n.global_position
+			FROM (VALUES (1)) AS one LEFT JOIN LATERAL (` + next + `) n ON true`
+	}
 
 	return pgQueries{
 		claim: `INSERT INTO ` + cursors + ` (name, event_types) VALUES ($1, $2)
-			ON CONFLICT (name) DO UPDATE SET event_types = EXCLUDED.event_types`,
+			ON CONFLICT (name) DO NOTHING`,
 		seed: `INSERT INTO ` + cursors + ` (name, event_types, transaction_id, global_position)
 			VALUES ($1, $2, $3::text::xid8, $4) ON CONFLICT (name) DO NOTHING`,
-		load: `SELECT transaction_id::text::numeric, global_position, stopped, stopped_at, stopped_error
+		lockCursor: `SELECT transaction_id::text::numeric, global_position, event_types, stopped
+			FROM ` + cursors + ` WHERE name = $1 FOR UPDATE`,
+		setFilter: `UPDATE ` + cursors + ` SET event_types = $2 WHERE name = $1`,
+		load: `SELECT transaction_id::text::numeric, global_position, event_types, stopped, stopped_at, stopped_error
 			FROM ` + cursors + ` WHERE name = $1`,
 		advance: `UPDATE ` + cursors + ` SET transaction_id = $4::text::xid8, global_position = $5
 			WHERE name = $1 AND transaction_id = $2::text::xid8 AND global_position = $3`,
@@ -451,6 +576,14 @@ func newPgQueries(schema string) pgQueries {
 			WHERE name = $1`,
 		resume: `UPDATE ` + cursors + ` SET stopped = false, stopped_at = NULL, stopped_error = NULL
 			WHERE name = $1`,
+
+		historyFiltered: `SELECT EXISTS (SELECT 1 ` + perType(`SELECT 1 FROM `+events+` e
+				WHERE e.event_type = t.event_type
+				AND (e.event_type, e.transaction_id, e.global_position) <= (t.event_type, $2::text::xid8, $3::bigint)
+				`+typeOrder+` LIMIT 1`) + `)`,
+		historyOutside: `SELECT EXISTS (SELECT 1 FROM ` + events + ` e
+			WHERE e.event_type <> ALL($1::text[])
+			AND (e.transaction_id, e.global_position) <= ($2::text::xid8, $3::bigint))`,
 
 		read: `SELECT ` + columns + ` FROM ` + events + ` e
 			WHERE ` + after(1) + ` AND ` + visible + `
@@ -473,6 +606,13 @@ func newPgQueries(schema string) pgQueries {
 			perType(`SELECT count(*) AS n FROM (SELECT 1 FROM `+events+` e
 				WHERE `+typeAfter(2)+` AND `+visible+`
 				`+typeOrder+` LIMIT $4) pending`),
+
+		frontier: withXmin(`SELECT e.transaction_id, e.global_position FROM ` + events + ` e
+			WHERE ` + after(1) + ` ` + order + ` LIMIT 1`),
+		frontierFiltered: withXmin(`SELECT e.transaction_id, e.global_position ` +
+			perType(`SELECT e.transaction_id, e.global_position FROM `+events+` e
+				WHERE `+typeAfter(2)+` `+typeOrder+` LIMIT 1`) + `
+			` + order + ` LIMIT 1`),
 	}
 }
 

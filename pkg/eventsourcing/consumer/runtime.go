@@ -21,6 +21,8 @@ type attachInput struct {
 	name string
 	// eventTypes is the filter; empty means every type.
 	eventTypes []string
+	// mode decides which filter changes the Cursor claim accepts.
+	mode Mode
 	// seedAtHead seeds a new Cursor at the head of the log on its first
 	// claim.
 	seedAtHead bool
@@ -30,9 +32,12 @@ type attachInput struct {
 // log, and Cursor transactions.
 type port interface {
 	codec() *eventstore.Codec
-	// acquire takes the Consumer's lease. It fails with ErrRunning while
-	// another runner holds it. The returned ctx ends when the lease is lost.
+	// acquire takes the Consumer's lease and claims its Cursor, checking a
+	// changed filter. It fails with ErrRunning while another runner holds
+	// it. The returned ctx ends when the lease is lost.
 	acquire(ctx context.Context) (context.Context, func(), error)
+	// load reads the Cursor. While the lease is held it first checks a
+	// filter not yet accepted, e.g. after Resume of a rejected change.
 	load(ctx context.Context) (cursorState, error)
 	// read returns up to limit visible matching events after the Cursor
 	// after, in Cursor order.
@@ -40,6 +45,9 @@ type port interface {
 	// head returns the Cursor of the last visible matching event.
 	head(ctx context.Context) (eventstore.Cursor, error)
 	status(ctx context.Context) (Status, error)
+	// frontier returns the transaction horizon and the first matching event
+	// after the Cursor after, for Await.
+	frontier(ctx context.Context, after eventstore.Cursor) (frontier, error)
 	// transact runs fn in a Cursor transaction.
 	transact(ctx context.Context, fn func(ctx context.Context) error) error
 	// advance moves the Cursor if it is still at m.from. Inside a Cursor
@@ -63,6 +71,23 @@ type readInput struct {
 	limit int
 }
 
+// frontier is what lies ahead of a Cursor.
+type frontier struct {
+	// xmin is the transaction horizon: every transaction with a smaller ID
+	// has ended (pg_snapshot_xmin).
+	xmin uint64
+	// next is the first matching event after the Cursor; zero when there
+	// is none.
+	next eventstore.Cursor
+}
+
+// covers reports whether no matching event can still appear in
+// (Cursor, pos]: every transaction up to pos has ended and none of them
+// wrote a matching event there.
+func (f frontier) covers(pos eventstore.Cursor) bool {
+	return pos.TransactionID < f.xmin && (f.next.IsZero() || f.next.Compare(pos) > 0)
+}
+
 type move struct {
 	from, to eventstore.Cursor
 }
@@ -71,6 +96,9 @@ type move struct {
 type record struct {
 	env     eventstore.Envelope
 	payload eventstore.Payload
+	// traceContext is the stored traceparent of the send span that
+	// appended the event, or "".
+	traceContext string
 }
 
 // PendingCap caps Status.Pending: a Consumer with more pending events

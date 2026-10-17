@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/deepworx/go-utils/internal/backoff"
@@ -59,6 +60,7 @@ type options struct {
 	logger         *slog.Logger
 	eventSpans     bool
 	tracerProvider trace.TracerProvider
+	meterProvider  metric.MeterProvider
 	// seedAtHead and decodeFailed are set by package reactor through
 	// internal/consumerhook.
 	seedAtHead   bool
@@ -98,6 +100,12 @@ func WithEventSpans(on bool) Option {
 // global.
 func WithTracerProvider(tp trace.TracerProvider) Option {
 	return func(o *options) { o.tracerProvider = tp }
+}
+
+// WithMeterProvider sets the meter provider of the histograms and gauges.
+// The default is the OTel global.
+func WithMeterProvider(mp metric.MeterProvider) Option {
+	return func(o *options) { o.meterProvider = mp }
 }
 
 func newOptions(opts []Option) options {
@@ -140,7 +148,9 @@ type Consumer struct {
 	port    port
 	logger  *slog.Logger
 	tracer  trace.Tracer
+	inst    instruments
 	running atomic.Bool
+	awaits  *poller
 }
 
 type eventTyper interface {
@@ -161,10 +171,11 @@ func New(rt Runtime, cfg Config, opts ...Option) (*Consumer, error) {
 	}
 	types = slices.Compact(slices.Sorted(slices.Values(types)))
 
-	p, err := rt.attach(attachInput{name: cfg.Name, eventTypes: types, seedAtHead: o.seedAtHead})
+	p, err := rt.attach(attachInput{name: cfg.Name, eventTypes: types, mode: cfg.Mode, seedAtHead: o.seedAtHead})
 	if err != nil {
 		return nil, fmt.Errorf("new consumer: %w", err)
 	}
+	logger := o.logger.With(telemetry.LogConsumer, cfg.Name)
 	return &Consumer{
 		name:    cfg.Name,
 		mode:    cfg.Mode,
@@ -172,8 +183,10 @@ func New(rt Runtime, cfg Config, opts ...Option) (*Consumer, error) {
 		opts:    o,
 		retry:   backoff.Retry(o.retry),
 		port:    p,
-		logger:  o.logger.With(telemetry.LogConsumer, cfg.Name),
+		logger:  logger,
 		tracer:  telemetry.Providers{TracerProvider: o.tracerProvider}.Tracer(scope),
+		inst:    newInstruments(telemetry.Providers{MeterProvider: o.meterProvider}.Meter(scope), cfg.Name),
+		awaits:  newPoller(p, logger),
 	}, nil
 }
 

@@ -3,6 +3,7 @@ package consumer
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
@@ -36,14 +37,20 @@ type memFeed interface {
 	Changed() <-chan struct{}
 	Next(after eventstore.Cursor, types []string) (eventstore.Envelope, eventstore.Payload, bool)
 	Head(types []string) eventstore.Cursor
+	TraceContext(at eventstore.Cursor) string
+	Horizon() uint64
 }
 
 type memCursor struct {
 	cursor  eventstore.Cursor
 	stopped *Stop
-	held    bool
-	claimed bool
-	resumed chan struct{}
+	// claimed reports that the Cursor was claimed once; eventTypes is the
+	// filter accepted then.
+	claimed    bool
+	eventTypes []string
+	attached   bool
+	held       bool
+	resumed    chan struct{}
 }
 
 // NewInMemoryRuntime creates an InMemoryRuntime over cfg.Store. It panics
@@ -82,17 +89,44 @@ func (rt *InMemoryRuntime) Resume(_ context.Context, name string) error {
 func (rt *InMemoryRuntime) attach(in attachInput) (port, error) {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
-	if _, ok := rt.cursors[in.name]; ok {
+	c, ok := rt.cursors[in.name]
+	switch {
+	case !ok:
+		c = &memCursor{resumed: make(chan struct{}, 1)}
+		rt.cursors[in.name] = c
+	case c.attached:
 		return nil, fmt.Errorf("%q: %w", in.name, ErrDuplicate)
 	}
-	c := &memCursor{resumed: make(chan struct{}, 1)}
-	rt.cursors[in.name] = c
-	return &memPort{rt: rt, types: in.eventTypes, seed: in.seedAtHead, cursor: c}, nil
+	c.attached = true
+	return &memPort{rt: rt, types: in.eventTypes, mode: in.mode, seed: in.seedAtHead, cursor: c}, nil
+}
+
+// restart returns a new Runtime over the same Store with a copy of the
+// Cursors, none of them attached.
+func (rt *InMemoryRuntime) restart() *InMemoryRuntime {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	next := &InMemoryRuntime{
+		feed:    rt.feed,
+		uow:     postgres.NewInMemoryUnitOfWork(),
+		cursors: make(map[string]*memCursor, len(rt.cursors)),
+	}
+	for name, c := range rt.cursors {
+		next.cursors[name] = &memCursor{
+			cursor:     c.cursor,
+			stopped:    c.stopped,
+			claimed:    c.claimed,
+			eventTypes: c.eventTypes,
+			resumed:    make(chan struct{}, 1),
+		}
+	}
+	return next
 }
 
 type memPort struct {
 	rt     *InMemoryRuntime
 	types  []string
+	mode   Mode
 	seed   bool
 	cursor *memCursor
 }
@@ -106,10 +140,7 @@ func (p *memPort) acquire(ctx context.Context) (context.Context, func(), error) 
 		return nil, nil, ErrRunning
 	}
 	p.cursor.held = true
-	if p.seed && !p.cursor.claimed {
-		p.cursor.cursor = p.rt.feed.Head(p.types)
-	}
-	p.cursor.claimed = true
+	p.claimFilter()
 	var once sync.Once
 	release := func() {
 		once.Do(func() {
@@ -121,9 +152,51 @@ func (p *memPort) acquire(ctx context.Context) (context.Context, func(), error) 
 	return ctx, release, nil
 }
 
+// claimFilter records the configured filter on the Cursor, or stops the
+// Consumer when the change would leave a gap. A Stopped Cursor is checked
+// again once resumed. The caller holds rt.mu.
+func (p *memPort) claimFilter() {
+	c := p.cursor
+	if c.stopped != nil || (c.claimed && slices.Equal(c.eventTypes, p.types)) {
+		return
+	}
+	if change := diffFilter(c.eventTypes, p.types); c.claimed && change.needsHistoryCheck(p.mode) &&
+		p.hasHistory(change, c.cursor) {
+		c.stopped = &Stop{At: time.Now(), Cause: change.cause()}
+		return
+	}
+	if p.seed && !c.claimed {
+		c.cursor = p.rt.feed.Head(p.types)
+	}
+	c.claimed = true
+	c.eventTypes = p.types
+}
+
+// hasHistory reports whether an event of a type added by f lies at or below
+// upTo.
+func (p *memPort) hasHistory(f filterChange, upTo eventstore.Cursor) bool {
+	if !f.widened {
+		env, _, ok := p.rt.feed.Next(eventstore.Cursor{}, f.added)
+		return ok && env.Cursor.Compare(upTo) <= 0
+	}
+	for after := (eventstore.Cursor{}); ; {
+		env, _, ok := p.rt.feed.Next(after, nil)
+		if !ok || env.Cursor.Compare(upTo) > 0 {
+			return false
+		}
+		if !slices.Contains(f.stored, env.EventType) {
+			return true
+		}
+		after = env.Cursor
+	}
+}
+
 func (p *memPort) load(context.Context) (cursorState, error) {
 	p.rt.mu.Lock()
 	defer p.rt.mu.Unlock()
+	if p.cursor.held {
+		p.claimFilter()
+	}
 	state := cursorState{cursor: p.cursor.cursor}
 	if s := p.cursor.stopped; s != nil {
 		stopped := *s
@@ -140,7 +213,7 @@ func (p *memPort) read(_ context.Context, in readInput) ([]record, error) {
 		if !ok {
 			break
 		}
-		records = append(records, record{env: env, payload: payload})
+		records = append(records, record{env: env, payload: payload, traceContext: p.rt.feed.TraceContext(env.Cursor)})
 		after = env.Cursor
 	}
 	return records, nil
@@ -169,6 +242,17 @@ func (p *memPort) status(ctx context.Context) (Status, error) {
 		after = env.Cursor
 	}
 	return s, nil
+}
+
+// frontier takes the horizon before the next event: a transaction that
+// starts in between gets a larger ID, so every event at or below a
+// position under the horizon is already visible to Next.
+func (p *memPort) frontier(_ context.Context, after eventstore.Cursor) (frontier, error) {
+	f := frontier{xmin: p.rt.feed.Horizon()}
+	if env, _, ok := p.rt.feed.Next(after, p.types); ok {
+		f.next = env.Cursor
+	}
+	return f, nil
 }
 
 func (p *memPort) transact(ctx context.Context, fn func(ctx context.Context) error) error {
