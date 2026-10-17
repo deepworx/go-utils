@@ -19,6 +19,70 @@ END
 $$;
 
 -- ---------------------------------------------------------------------------
+-- pkg/eventsourcing/eventstore: the append-only event log. Events are
+-- ordered by (transaction_id, global_position); consumers only read below
+-- pg_snapshot_xmin. recorded_at is set by the store clock.
+-- ---------------------------------------------------------------------------
+CREATE TABLE public.events (
+    global_position BIGINT      GENERATED ALWAYS AS IDENTITY,
+    transaction_id  XID8        NOT NULL DEFAULT pg_current_xact_id(),
+    event_id        UUID        PRIMARY KEY,
+    tenant_id       TEXT        NOT NULL,
+    stream_type     TEXT        NOT NULL,
+    stream_id       UUID        NOT NULL,
+    stream_position INT         NOT NULL CHECK (stream_position > 0),
+    event_type      TEXT        NOT NULL,
+    schema_version  INT         NOT NULL CHECK (schema_version > 0),
+    event_data      BYTEA       NOT NULL,
+    actor           TEXT        NOT NULL,
+    correlation_id  TEXT        NOT NULL,
+    causation_id    UUID        NULL,
+    trace_context   TEXT        NULL,
+    recorded_at     TIMESTAMPTZ NOT NULL,
+    CONSTRAINT events_stream_position_key UNIQUE (tenant_id, stream_id, stream_position)
+);
+
+-- Consumer reads in log order.
+CREATE INDEX events_log_idx
+    ON public.events (transaction_id, global_position);
+
+-- Consumer reads filtered by event type.
+CREATE INDEX events_event_type_idx
+    ON public.events (event_type, transaction_id, global_position);
+
+-- The log is append-only (ADR-0009).
+CREATE FUNCTION public.events_reject_change() RETURNS trigger
+    LANGUAGE plpgsql AS
+$$
+BEGIN
+    RAISE EXCEPTION '%.events is append-only: % rejected', TG_TABLE_SCHEMA, TG_OP
+        USING ERRCODE = 'restrict_violation';
+END
+$$;
+
+CREATE TRIGGER events_immutable
+    BEFORE UPDATE OR DELETE ON public.events
+    FOR EACH ROW EXECUTE FUNCTION public.events_reject_change();
+
+CREATE TRIGGER events_no_truncate
+    BEFORE TRUNCATE ON public.events
+    FOR EACH STATEMENT EXECUTE FUNCTION public.events_reject_change();
+
+-- Wakes the consumers on channel <schema>.events, without payload.
+CREATE FUNCTION public.events_notify() RETURNS trigger
+    LANGUAGE plpgsql AS
+$$
+BEGIN
+    PERFORM pg_notify(TG_TABLE_SCHEMA || '.events', '');
+    RETURN NULL;
+END
+$$;
+
+CREATE TRIGGER events_notify
+    AFTER INSERT ON public.events
+    FOR EACH STATEMENT EXECUTE FUNCTION public.events_notify();
+
+-- ---------------------------------------------------------------------------
 -- pkg/postgres/guard: tenant-scoped uniqueness rules.
 -- ---------------------------------------------------------------------------
 CREATE TABLE public.guards (

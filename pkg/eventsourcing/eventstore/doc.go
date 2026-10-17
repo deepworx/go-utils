@@ -25,6 +25,10 @@
 //		return t.Complete()
 //	}, eventstore.ExpectVersion(lastVersion))
 //
+// In production the same Repository runs on Postgres (the events table of
+// docs/postgres/schema.sql) with NewPgStore and NewPgUnitOfWork, which
+// serializes writers per Stream with a transaction-scoped advisory lock.
+//
 // The Tenant comes from ctxutil.TenantID. Each event records its Actor
 // (ctxutil.WithActor, else Claims.UserID), Correlation
 // (ctxutil.WithCorrelationID, else the request ID, else a UUIDv7 per Command
