@@ -42,6 +42,9 @@ type port interface {
 	// head returns the Cursor of the last visible matching event.
 	head(ctx context.Context) (eventstore.Cursor, error)
 	status(ctx context.Context) (Status, error)
+	// frontier returns the transaction horizon and the first matching event
+	// after the Cursor after, for Await.
+	frontier(ctx context.Context, after eventstore.Cursor) (frontier, error)
 	// transact runs fn in a Cursor transaction.
 	transact(ctx context.Context, fn func(ctx context.Context) error) error
 	// advance moves the Cursor if it is still at m.from. Inside a Cursor
@@ -63,6 +66,23 @@ type cursorState struct {
 type readInput struct {
 	after eventstore.Cursor
 	limit int
+}
+
+// frontier is what lies ahead of a Cursor.
+type frontier struct {
+	// xmin is the transaction horizon: every transaction with a smaller ID
+	// has ended (pg_snapshot_xmin).
+	xmin uint64
+	// next is the first matching event after the Cursor; zero when there
+	// is none.
+	next eventstore.Cursor
+}
+
+// covers reports whether no matching event can still appear in
+// (Cursor, pos]: every transaction up to pos has ended and none of them
+// wrote a matching event there.
+func (f frontier) covers(pos eventstore.Cursor) bool {
+	return pos.TransactionID < f.xmin && (f.next.IsZero() || f.next.Compare(pos) > 0)
 }
 
 type move struct {

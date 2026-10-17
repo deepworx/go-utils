@@ -38,6 +38,7 @@ type memFeed interface {
 	Next(after eventstore.Cursor, types []string) (eventstore.Envelope, eventstore.Payload, bool)
 	Head(types []string) eventstore.Cursor
 	TraceContext(at eventstore.Cursor) string
+	Horizon() uint64
 }
 
 type memCursor struct {
@@ -237,6 +238,17 @@ func (p *memPort) status(ctx context.Context) (Status, error) {
 		after = env.Cursor
 	}
 	return s, nil
+}
+
+// frontier takes the horizon before the next event: a transaction that
+// starts in between gets a larger ID, so every event at or below a
+// position under the horizon is already visible to Next.
+func (p *memPort) frontier(_ context.Context, after eventstore.Cursor) (frontier, error) {
+	f := frontier{xmin: p.rt.feed.Horizon()}
+	if env, _, ok := p.rt.feed.Next(after, p.types); ok {
+		f.next = env.Cursor
+	}
+	return f, nil
 }
 
 func (p *memPort) transact(ctx context.Context, fn func(ctx context.Context) error) error {

@@ -145,6 +145,7 @@ type Consumer struct {
 	tracer  trace.Tracer
 	inst    instruments
 	running atomic.Bool
+	awaits  *poller
 }
 
 type eventTyper interface {
@@ -169,6 +170,7 @@ func New(rt Runtime, cfg Config, opts ...Option) (*Consumer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("new consumer: %w", err)
 	}
+	logger := o.logger.With(telemetry.LogConsumer, cfg.Name)
 	return &Consumer{
 		name:    cfg.Name,
 		mode:    cfg.Mode,
@@ -176,9 +178,10 @@ func New(rt Runtime, cfg Config, opts ...Option) (*Consumer, error) {
 		opts:    o,
 		retry:   backoff.Retry(o.retry),
 		port:    p,
-		logger:  o.logger.With(telemetry.LogConsumer, cfg.Name),
+		logger:  logger,
 		tracer:  telemetry.Providers{TracerProvider: o.tracerProvider}.Tracer(scope),
 		inst:    newInstruments(telemetry.Providers{MeterProvider: o.meterProvider}.Meter(scope), cfg.Name),
+		awaits:  newPoller(p, logger),
 	}, nil
 }
 

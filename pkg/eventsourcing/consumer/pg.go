@@ -429,6 +429,25 @@ func (p *pgPort) status(ctx context.Context) (Status, error) {
 	return s, nil
 }
 
+func (p *pgPort) frontier(ctx context.Context, after eventstore.Cursor) (frontier, error) {
+	query, args := p.rt.queries.frontier, []any{xid(after), after.Position}
+	if len(p.types) > 0 {
+		query, args = p.rt.queries.frontierFiltered, append([]any{p.types}, args...)
+	}
+	var (
+		f       frontier
+		nextXID *uint64
+		nextPos *int64
+	)
+	if err := p.rt.pool.QueryRow(ctx, query, args...).Scan(&f.xmin, &nextXID, &nextPos); err != nil {
+		return frontier{}, err
+	}
+	if nextXID != nil && nextPos != nil {
+		f.next = eventstore.Cursor{TransactionID: *nextXID, Position: *nextPos}
+	}
+	return f, nil
+}
+
 func (p *pgPort) transact(ctx context.Context, fn func(ctx context.Context) error) error {
 	return p.rt.uow.Execute(ctx, fn)
 }
@@ -480,6 +499,9 @@ type pgQueries struct {
 	read, readFiltered       string
 	head, headFiltered       string
 	pending, pendingFiltered string
+	// frontier reads pg_snapshot_xmin and the first matching event after
+	// the Cursor, visible or not, in one snapshot.
+	frontier, frontierFiltered string
 }
 
 // xminAgeQuery counts the transaction IDs assigned since the oldest one
@@ -513,6 +535,11 @@ func newPgQueries(schema string) pgQueries {
 	typeOrderDesc := `ORDER BY e.event_type DESC, e.transaction_id DESC, e.global_position DESC`
 	perType := func(inner string) string {
 		return `FROM unnest($1::text[]) AS t(event_type) CROSS JOIN LATERAL (` + inner + `) e`
+	}
+	withXmin := func(next string) string {
+		return `SELECT pg_snapshot_xmin(pg_current_snapshot())::text::numeric,
+			n.transaction_id::text::numeric, n.global_position
+			FROM (VALUES (1)) AS one LEFT JOIN LATERAL (` + next + `) n ON true`
 	}
 
 	return pgQueries{
@@ -559,6 +586,13 @@ func newPgQueries(schema string) pgQueries {
 			perType(`SELECT count(*) AS n FROM (SELECT 1 FROM `+events+` e
 				WHERE `+typeAfter(2)+` AND `+visible+`
 				`+typeOrder+` LIMIT $4) pending`),
+
+		frontier: withXmin(`SELECT e.transaction_id, e.global_position FROM ` + events + ` e
+			WHERE ` + after(1) + ` ` + order + ` LIMIT 1`),
+		frontierFiltered: withXmin(`SELECT e.transaction_id, e.global_position ` +
+			perType(`SELECT e.transaction_id, e.global_position FROM `+events+` e
+				WHERE `+typeAfter(2)+` `+typeOrder+` LIMIT 1`) + `
+			` + order + ` LIMIT 1`),
 	}
 }
 
