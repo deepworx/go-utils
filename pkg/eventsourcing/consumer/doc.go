@@ -25,6 +25,13 @@
 // errors stop it at once. A Stopped Consumer stays at its Cursor until
 // Runtime.Resume.
 //
+// The filter is stored on the Cursor and checked when a release changes it
+// (ADR-0006). Removed types are always accepted. An OwnTransaction Consumer
+// handles added types from its Cursor onwards. A Transactional Consumer
+// accepts added types only when no event of them lies at or below its
+// Cursor; otherwise it goes Stopped, and the change needs a new Projection
+// version. Resume does not skip this check.
+//
 // The Runtime keeps the Cursors. NewPgRuntime runs on an eventstore.PgStore
 // with Cursors in the consumer_cursors table; handlers write through
 // postgres.Conn, which joins the Cursor transaction. Each Consumer runs under
