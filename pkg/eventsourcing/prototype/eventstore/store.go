@@ -93,7 +93,37 @@ type Envelope struct {
 	EventType      string
 	Data           []byte
 	OccurredOn     time.Time
+
+	// Added for DWX-221: log metadata the Reactor reads and stamps.
+	EventID       uuid.UUID
+	Actor         string
+	CorrelationID string
+	CausationID   string
 }
+
+// --- metadata (stand-in for ctxutil.WithUserID/WithCorrelationID/WithCausationID)
+
+type metaKey struct{ name string }
+
+func WithActor(ctx context.Context, v string) context.Context {
+	return context.WithValue(ctx, metaKey{"actor"}, v)
+}
+
+func WithCorrelation(ctx context.Context, v string) context.Context {
+	return context.WithValue(ctx, metaKey{"correlation"}, v)
+}
+
+func WithCausation(ctx context.Context, v string) context.Context {
+	return context.WithValue(ctx, metaKey{"causation"}, v)
+}
+
+func meta(ctx context.Context, name string) string {
+	v, _ := ctx.Value(metaKey{name}).(string)
+	return v
+}
+
+// TenantOf exposes the tenant for the consumer stand-in.
+func TenantOf(ctx context.Context) string { t, _ := tenant(ctx); return t }
 
 type streamKey struct {
 	tenant string
@@ -118,6 +148,55 @@ func (s *InMemoryStore) All() []Envelope {
 	return append([]Envelope(nil), s.events...)
 }
 
+// ReadAfter returns events after c (log order) whose type is in types (empty = all).
+func (s *InMemoryStore) ReadAfter(c Cursor, types []string) []Envelope {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []Envelope
+	for _, e := range s.events {
+		if e.Cursor.Position > c.Position && (len(types) == 0 || contains(types, e.EventType)) {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// ReadOne returns one event by tenant and id.
+func (s *InMemoryStore) ReadOne(tenant string, id uuid.UUID) (Envelope, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, e := range s.events {
+		if e.TenantID == tenant && e.EventID == id {
+			return e, true
+		}
+	}
+	return Envelope{}, false
+}
+
+// Head is the last position in the log.
+func (s *InMemoryStore) Head() Cursor {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.events) == 0 {
+		return Cursor{}
+	}
+	return s.events[len(s.events)-1].Cursor
+}
+
+// Decode exposes the codec for the consumer Router stand-in.
+func (s *InMemoryStore) Decode(eventType string, data []byte) (aggregate.Event, error) {
+	return s.codec.decode(eventType, data)
+}
+
+func contains(xs []string, x string) bool {
+	for _, v := range xs {
+		if v == x {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *InMemoryStore) load(k streamKey, to int) []Envelope {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -135,6 +214,7 @@ type appendInput struct {
 	streamType   string
 	priorVersion int
 	events       []aggregate.Event
+	ctx          context.Context
 }
 
 func (s *InMemoryStore) append(in appendInput) (Cursor, error) {
@@ -147,6 +227,10 @@ func (s *InMemoryStore) append(in appendInput) (Cursor, error) {
 		}
 	}
 	s.xid++
+	correlation := meta(in.ctx, "correlation")
+	if correlation == "" {
+		correlation = uuid.NewString()[28:] // a request starts a new chain
+	}
 	var last Cursor
 	for i, ev := range in.events {
 		data, err := json.Marshal(ev)
@@ -159,6 +243,8 @@ func (s *InMemoryStore) append(in appendInput) (Cursor, error) {
 			Cursor: last, TenantID: in.key.tenant, StreamID: in.key.id, StreamType: in.streamType,
 			StreamPosition: in.priorVersion + 1 + i, EventType: ev.EventType(), Data: data,
 			OccurredOn: time.Now().UTC(),
+			EventID:    uuid.Must(uuid.NewV7()), Actor: meta(in.ctx, "actor"),
+			CorrelationID: correlation, CausationID: meta(in.ctx, "causation"),
 		})
 	}
 	return last, nil

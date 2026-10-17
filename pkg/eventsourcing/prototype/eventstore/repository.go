@@ -163,7 +163,7 @@ func (r *Repository[I, A, P]) Save(ctx context.Context, agg P) (CommandResult, e
 		return CommandResult{Version: version}, nil
 	}
 	pos, err := r.cfg.Store.append(appendInput{
-		key: k, streamType: agg.StreamType(), priorVersion: version - len(pending), events: pending,
+		key: k, streamType: agg.StreamType(), priorVersion: version - len(pending), events: pending, ctx: ctx,
 	})
 	if err != nil {
 		return CommandResult{}, fmt.Errorf("save %s: %w", id, err)
