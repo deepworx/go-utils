@@ -29,8 +29,17 @@ func TestInMemoryContract(t *testing.T) {
 			UnitOfWork: eventstore.NewInMemoryUnitOfWork(),
 			Runtime:    consumer.NewInMemoryRuntime(consumer.InMemoryRuntimeConfig{Store: store}),
 			Redeliver:  reactor.Redeliver,
+			Discarded:  memDiscarded,
 		}
 	}, reactortest.InBubble())
+}
+
+func memDiscarded(_ context.Context, r *reactor.Reactor) ([]reactortest.Discarded, error) {
+	var out []reactortest.Discarded
+	for _, d := range reactor.Discarded(r) {
+		out = append(out, reactortest.Discarded{EventID: d.EventID, By: d.By})
+	}
+	return out, nil
 }
 
 // A running Reactor redrives a Parked Stream on its own once the first

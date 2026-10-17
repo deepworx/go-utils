@@ -114,13 +114,13 @@ func (r *Reactor) redriveDue(ctx context.Context) error {
 	for _, s := range streams {
 		res, failure, err := r.redrive(ctx, redriveInput{stream: s, replay: r.react, auto: auto})
 		switch {
-		case errors.Is(err, ErrNotParked):
+		case errors.Is(err, ErrNotParked), errors.Is(err, ErrRedriving):
 		case err != nil:
 			errs = append(errs, fmt.Errorf("auto-redrive %s/%s: %w", s.Tenant, s.ID, err))
 		case failure != nil:
 			r.logger.WarnContext(ctx, "auto-redrive failed",
 				telemetry.LogTenantID, s.Tenant, telemetry.LogStreamID, s.ID,
-				"replayed", res.Replayed, "remaining", res.Remaining, telemetry.LogError, failure)
+				telemetry.LogReplayed, res.Replayed, telemetry.LogRemaining, res.Remaining, telemetry.LogError, failure)
 		}
 		if ctx.Err() != nil {
 			return context.Cause(ctx)

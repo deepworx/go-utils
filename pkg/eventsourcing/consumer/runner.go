@@ -10,6 +10,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/deepworx/go-utils/internal/backoff"
+	"github.com/deepworx/go-utils/internal/consumerhook"
 	"github.com/deepworx/go-utils/internal/telemetry"
 	"github.com/deepworx/go-utils/pkg/ctxutil"
 	"github.com/deepworx/go-utils/pkg/eventsourcing/eventstore"
@@ -327,7 +328,7 @@ func (c *Consumer) handle(ctx context.Context, r record) (err error) {
 	if err != nil {
 		err = Permanent(fmt.Errorf("event %s: %w", r.env.EventID, err))
 		if c.opts.decodeFailed != nil {
-			return c.opts.decodeFailed(ctx, r.env, r.payload, err)
+			return c.opts.decodeFailed(ctx, consumerhook.DecodeFailure{Env: r.env, Payload: r.payload, Err: err})
 		}
 		return err
 	}

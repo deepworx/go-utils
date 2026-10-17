@@ -9,18 +9,29 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/deepworx/go-utils/pkg/eventsourcing/eventstore"
 )
 
 // memParks is the park list of a Reactor on an InMemoryRuntime. Each hold
-// has its own mutex, the in-memory counterpart of the Pg row lock.
+// has its own mutex, the in-memory counterpart of the Pg row lock; a
+// redrive claims the head instead of keeping the mutex while it reacts.
 type memParks struct {
-	codec *eventstore.Codec
-
 	mu    sync.Mutex
 	holds map[Stream]*memHold
 	// order is the order Streams were Parked in.
 	order uint64
+	// discarded is the audit trail of Discard, in discard order.
+	discarded []memDiscarded
+}
+
+// memDiscarded is a discarded event, kept like a Pg row with discarded_at
+// and discarded_by.
+type memDiscarded struct {
+	Parked
+	by string
+	at time.Time
 }
 
 type memHold struct {
@@ -32,6 +43,14 @@ type memHold struct {
 	redrives  int
 	next      time.Time
 	exhausted bool
+	// claim is the token of the redrive replaying the head, valid until
+	// claimedUntil.
+	claim        uuid.UUID
+	claimedUntil time.Time
+}
+
+func (h *memHold) claimed(now time.Time) bool {
+	return h.claim != uuid.Nil && h.claimedUntil.After(now)
 }
 
 func (h *memHold) due(now time.Time) bool {
@@ -44,8 +63,8 @@ type memParked struct {
 	payload *eventstore.Payload
 }
 
-func newMemParks(codec *eventstore.Codec) *memParks {
-	return &memParks{codec: codec, holds: make(map[Stream]*memHold)}
+func newMemParks() *memParks {
+	return &memParks{holds: make(map[Stream]*memHold)}
 }
 
 // lock returns the locked hold of s, creating it when create is set. It
@@ -114,46 +133,54 @@ func (m *memParks) park(_ context.Context, in parkInput) error {
 	return nil
 }
 
-func (m *memParks) redriveHead(ctx context.Context, in redriveInput) (headResult, error) {
+func (m *memParks) claimHead(_ context.Context, in claimInput) (claimedHead, error) {
 	h, ok := m.lock(in.stream, false)
 	if !ok {
-		return headResult{}, ErrNotParked
+		return claimedHead{}, ErrNotParked
 	}
 	defer h.mu.Unlock()
-	if in.auto != nil && !h.due(in.auto.now) {
-		return headResult{}, ErrNotParked
-	}
-	if len(h.events) == 0 {
+	switch {
+	case in.auto != nil && !h.due(in.auto.now):
+		return claimedHead{}, ErrNotParked
+	case h.claimed(in.now):
+		return claimedHead{}, ErrRedriving
+	case len(h.events) == 0:
 		m.release(in.stream)
-		return headResult{}, nil
+		return claimedHead{empty: true}, nil
 	}
-	head := &h.events[0]
-	if err := m.replay(ctx, in.replay, head); err != nil {
-		head.Cause = err.Error()
-		head.Attempts++
+	h.claim, h.claimedUntil = in.token, in.until
+	head := h.events[0]
+	return claimedHead{env: head.env, payload: head.payload}, nil
+}
+
+func (m *memParks) settleHead(_ context.Context, in settleInput) (int, error) {
+	h, ok := m.lock(in.stream, false)
+	if !ok {
+		return 0, nil
+	}
+	defer h.mu.Unlock()
+	if h.claim != in.token {
+		return 0, fmt.Errorf("claim on %s/%s lost: %w", in.stream.Tenant, in.stream.ID, ErrRedriving)
+	}
+	h.claim, h.claimedUntil = uuid.Nil, time.Time{}
+	i := slices.IndexFunc(h.events, func(e memParked) bool { return e.EventID == in.eventID })
+	switch {
+	case in.failure == nil && i >= 0:
+		h.events = slices.Delete(h.events, i, i+1)
+	case in.failure != nil:
+		if i >= 0 {
+			h.events[i].Cause = in.failure.Error()
+			h.events[i].Attempts++
+		}
 		if in.auto != nil {
 			h.redrives++
 			h.next, h.exhausted = in.auto.next(h.redrives)
 		}
-		return headResult{remaining: len(h.events), failure: err}, nil
 	}
-	h.events = h.events[1:]
 	if len(h.events) == 0 {
 		m.release(in.stream)
 	}
-	return headResult{replayed: true, remaining: len(h.events)}, nil
-}
-
-func (m *memParks) replay(ctx context.Context, replay replayFunc, p *memParked) error {
-	env := p.env
-	if p.payload != nil {
-		event, err := m.codec.Decode(*p.payload)
-		if err != nil {
-			return fmt.Errorf("event %s: %w", env.EventID, err)
-		}
-		env.Event = event
-	}
-	return replay(ctx, env)
+	return len(h.events), nil
 }
 
 func (m *memParks) discard(_ context.Context, in discardInput) error {
@@ -166,10 +193,14 @@ func (m *memParks) discard(_ context.Context, in discardInput) error {
 	if i < 0 {
 		return ErrNotParked
 	}
+	gone := h.events[i]
 	h.events = slices.Delete(h.events, i, i+1)
+	m.mu.Lock()
+	m.discarded = append(m.discarded, memDiscarded{Parked: gone.Parked, by: in.by, at: in.at})
 	if len(h.events) == 0 {
-		m.release(in.stream)
+		delete(m.holds, in.stream)
 	}
+	m.mu.Unlock()
 	return nil
 }
 

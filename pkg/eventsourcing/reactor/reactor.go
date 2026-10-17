@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/metric"
 
 	"github.com/deepworx/go-utils/internal/backoff"
@@ -141,11 +143,44 @@ type Reactor struct {
 	opts     options
 	retry    backoff.Retry
 	parks    parkStore
+	codec    *eventstore.Codec
 	consumer *consumer.Consumer
 	logger   *slog.Logger
 	inst     instruments
 	// parked wakes the auto-redrive loop after a park.
 	parked chan struct{}
+	// unparked holds the parks whose write failed, so a retry repeats only
+	// the write and not the reaction.
+	unparked pendingParks
+}
+
+// pendingParks are parks, by EventID, whose reaction failed for good but
+// whose write to the park list did not succeed yet.
+type pendingParks struct {
+	mu sync.Mutex
+	m  map[uuid.UUID]parkInput
+}
+
+func (p *pendingParks) get(id uuid.UUID) (parkInput, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	in, ok := p.m[id]
+	return in, ok
+}
+
+func (p *pendingParks) put(in parkInput) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.m == nil {
+		p.m = make(map[uuid.UUID]parkInput)
+	}
+	p.m[in.env.EventID] = in
+}
+
+func (p *pendingParks) remove(id uuid.UUID) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	delete(p.m, id)
 }
 
 const actorPrefix = "system:reactor:"
@@ -179,13 +214,17 @@ func New(rt consumer.Runtime, cfg Config, opts ...Option) (*Reactor, error) {
 		parked:  make(chan struct{}, 1),
 	}
 	r.parks = newParkStore(backend, cfg.Name)
+	r.codec = backend.Codec
 
-	hook, _ := consumerhook.ReactorOption(consumerhook.ReactorOptions{
+	hook, ok := consumerhook.ReactorOption(consumerhook.ReactorOptions{
 		SeedAtHead:   cfg.StartAt == FromNow,
 		DecodeFailed: r.decodeFailed,
 		Leased:       r.leased,
 		Drained:      r.redriveDue,
 	}).(consumer.Option)
+	if !ok {
+		return nil, fmt.Errorf("new reactor %q: runtime hook is not a consumer.Option: %w", cfg.Name, consumer.ErrInvalidConfig)
+	}
 	var handler consumer.Handler
 	if cfg.Handler != nil {
 		handler = consumer.HandlerFunc(r.handle)
@@ -219,8 +258,12 @@ func filter(cfg Config) []string {
 func (r *Reactor) Consumer() *consumer.Consumer { return r.consumer }
 
 // handle is the Consumer's handler: it holds env behind a Parked Stream,
-// or reacts and Parks the Stream when the reaction fails for good.
+// or reacts and Parks the Stream when the reaction fails for good. When
+// only the park write failed before, it retries just that write.
 func (r *Reactor) handle(ctx context.Context, env eventstore.Envelope) error {
+	if in, ok := r.unparked.get(env.EventID); ok {
+		return r.park(ctx, in)
+	}
 	held, err := r.parks.holdIfParked(ctx, parkInput{env: env, at: r.now()})
 	if err != nil {
 		return fmt.Errorf("check park list: %w", err)
@@ -235,12 +278,14 @@ func (r *Reactor) handle(ctx context.Context, env eventstore.Envelope) error {
 	if ctx.Err() != nil {
 		return context.Cause(ctx)
 	}
-	return r.park(ctx, parkInput{env: env, cause: err.Error(), attempts: attempts})
+	in := parkInput{env: env, cause: err.Error(), attempts: attempts}
+	r.unparked.put(in)
+	return r.park(ctx, in)
 }
 
 // decodeFailed Parks an undecodable event at once.
-func (r *Reactor) decodeFailed(ctx context.Context, env eventstore.Envelope, payload eventstore.Payload, cause error) error {
-	in := parkInput{env: env, payload: &payload, at: r.now()}
+func (r *Reactor) decodeFailed(ctx context.Context, f consumerhook.DecodeFailure) error {
+	in := parkInput{env: f.Env, payload: &f.Payload, at: r.now()}
 	held, err := r.parks.holdIfParked(ctx, in)
 	if err != nil {
 		return fmt.Errorf("check park list: %w", err)
@@ -248,7 +293,7 @@ func (r *Reactor) decodeFailed(ctx context.Context, env eventstore.Envelope, pay
 	if held {
 		return nil
 	}
-	in.cause, in.attempts = cause.Error(), 1
+	in.cause, in.attempts = f.Err.Error(), 1
 	return r.park(ctx, in)
 }
 
@@ -260,6 +305,7 @@ func (r *Reactor) park(ctx context.Context, in parkInput) error {
 	if err := r.parks.park(ctx, in); err != nil {
 		return fmt.Errorf("park event %s: %w", in.env.EventID, err)
 	}
+	r.unparked.remove(in.env.EventID)
 	select {
 	case r.parked <- struct{}{}:
 	default:

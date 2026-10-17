@@ -182,7 +182,8 @@ func (s suite) statusCountsParked(t *testing.T) {
 }
 
 // concurrentRedrives: an auto-redrive and a manual Redrive of one Stream
-// at the same time replay each held event exactly once.
+// at the same time replay each held event exactly once; the one that finds
+// the head claimed by the other backs off.
 func (s suite) concurrentRedrives(t *testing.T) {
 	h := s.setup(t)
 	id := h.place(userCtx("t1"), "fail", "a", "b", "c")
@@ -209,13 +210,71 @@ func (s suite) concurrentRedrives(t *testing.T) {
 	if drainErr != nil {
 		t.Fatalf("Drain: %v", drainErr)
 	}
-	if redrive != nil && !errors.Is(redrive, reactor.ErrNotParked) {
-		t.Fatalf("Redrive = %+v, %v, want success or ErrNotParked", res, redrive)
+	if redrive != nil && !errors.Is(redrive, reactor.ErrNotParked) && !errors.Is(redrive, reactor.ErrRedriving) {
+		t.Fatalf("Redrive = %+v, %v, want success, ErrNotParked or ErrRedriving", res, redrive)
 	}
 	if got := rec.get(); !slices.Equal(got, []string{"fail", "a", "b", "c"}) {
 		t.Errorf("reacted to %v, want each event once in order", got)
 	}
 	if got := h.parked(r, ""); len(got) != 0 {
 		t.Errorf("parked = %+v, want none", got)
+	}
+}
+
+// redriveDoesNotBlockLiveHold: while a Redrive's reaction runs, the live
+// handler still holds a new event of the same Stream at once, and the
+// Redrive replays it too.
+func (s suite) redriveDoesNotBlockLiveHold(t *testing.T) {
+	h := s.setup(t)
+	id := h.place(userCtx("t1"), "fail", "a")
+
+	var (
+		fixed   atomic.Bool
+		rec     reactions
+		started = make(chan struct{})
+		gate    = make(chan struct{})
+		once    sync.Once
+	)
+	r := h.newReactor(reactor.Config{Name: "unblocked", Handler: script(&rec, func(ctx context.Context, note string) error {
+		if !fixed.Load() {
+			return errHopeless
+		}
+		if note == "fail" {
+			once.Do(func() { close(started) })
+			select {
+			case <-gate:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		return nil
+	})})
+	h.drain(r)
+	fixed.Store(true)
+
+	var (
+		wg      sync.WaitGroup
+		res     reactor.RedriveResult
+		redrive error
+	)
+	wg.Go(func() { res, redrive = r.Redrive(userCtx("ops"), streamOf("t1", id)) })
+	<-started
+
+	h.append(userCtx("t1"), id, placed{Note: "late"})
+	late := h.history("t1", id)[2]
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	err := h.backend.Redeliver(ctx, r, late)
+	cancel()
+	close(gate)
+	wg.Wait()
+
+	if err != nil {
+		t.Fatalf("live handler during Redrive = %v, want the event held at once", err)
+	}
+	if redrive != nil || res != (reactor.RedriveResult{Replayed: 3}) {
+		t.Fatalf("Redrive = %+v, %v, want 3 replayed", res, redrive)
+	}
+	if got := rec.get(); !slices.Equal(got, []string{"fail", "a", "late"}) {
+		t.Errorf("reacted to %v, want [fail a late]", got)
 	}
 }

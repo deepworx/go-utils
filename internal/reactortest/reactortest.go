@@ -28,9 +28,9 @@ type Backend struct {
 	// Redeliver hands env to r's live handler once more, as after a crash
 	// between handling an event and advancing the Cursor.
 	Redeliver func(ctx context.Context, r *reactor.Reactor, env eventstore.Envelope) error
-	// Discarded lists the audit rows Discard kept for the named Reactor.
-	// Nil for a backend that keeps none.
-	Discarded func(ctx context.Context, reactorName string) ([]Discarded, error)
+	// Discarded lists the audit records Discard kept for r, in the order
+	// they were discarded.
+	Discarded func(ctx context.Context, r *reactor.Reactor) ([]Discarded, error)
 }
 
 // Discarded is the audit record of a discarded event.

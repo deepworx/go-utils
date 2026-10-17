@@ -73,10 +73,10 @@ func newPgRuntime(t *testing.T, pool *pgxpool.Pool, store *eventstore.PgStore) *
 }
 
 // pgDiscarded reads the audit rows Discard keeps.
-func pgDiscarded(pool *pgxpool.Pool) func(ctx context.Context, reactorName string) ([]reactortest.Discarded, error) {
-	return func(ctx context.Context, reactorName string) ([]reactortest.Discarded, error) {
+func pgDiscarded(pool *pgxpool.Pool) func(ctx context.Context, r *reactor.Reactor) ([]reactortest.Discarded, error) {
+	return func(ctx context.Context, r *reactor.Reactor) ([]reactortest.Discarded, error) {
 		rows, err := pool.Query(ctx, `SELECT event_id, discarded_by FROM parked_events
-			WHERE consumer = $1 AND discarded_at IS NOT NULL ORDER BY stream_position`, reactorName)
+			WHERE consumer = $1 AND discarded_at IS NOT NULL ORDER BY discarded_at, stream_position`, r.Consumer().Name())
 		if err != nil {
 			return nil, err
 		}
@@ -93,8 +93,10 @@ func pgDiscarded(pool *pgxpool.Pool) func(ctx context.Context, reactorName strin
 	}
 }
 
-// A park list that cannot be written makes the Reactor retry and then go
-// Stopped, because moving the Cursor past an unrecorded event would lose it.
+// A park list that cannot be written makes the Reactor retry the write and
+// then go Stopped, because moving the Cursor past an unrecorded event would
+// lose it. The reaction itself runs only once: a retry repeats the write,
+// not the outbound side effects.
 func TestPgParkWriteFailureStops(t *testing.T) {
 	pool := pgtest.New(t)
 	codec := eventstore.NewCodec()
@@ -144,8 +146,8 @@ func TestPgParkWriteFailureStops(t *testing.T) {
 	if !st.Cursor.IsZero() || st.Stopped == nil {
 		t.Errorf("Status = %+v, want Stopped at the zero Cursor", st)
 	}
-	if got := calls.Load(); got != 2 {
-		t.Errorf("reactions = %d, want one per park attempt", got)
+	if got := calls.Load(); got != 1 {
+		t.Errorf("reactions = %d, want 1 across all park attempts", got)
 	}
 }
 
