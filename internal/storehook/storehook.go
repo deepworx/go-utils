@@ -23,3 +23,20 @@ func InMemoryFeed(store any) (any, bool) {
 	}
 	return inMemoryFeed(store)
 }
+
+var pgStore func(store any) (any, bool)
+
+// RegisterPgStore installs the lookup from an eventstore PgStore to its
+// read-side settings. Only package eventstore calls it.
+func RegisterPgStore(lookup func(store any) (any, bool)) {
+	pgStore = lookup
+}
+
+// PgStore returns the read-side settings of an eventstore PgStore, or false
+// when store is none.
+func PgStore(store any) (any, bool) {
+	if pgStore == nil {
+		return nil, false
+	}
+	return pgStore(store)
+}

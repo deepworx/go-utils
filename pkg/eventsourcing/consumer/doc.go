@@ -25,9 +25,18 @@
 // errors stop it at once. A Stopped Consumer stays at its Cursor until
 // Runtime.Resume.
 //
-// The Runtime keeps the Cursors. NewInMemoryRuntime runs on an
+// The Runtime keeps the Cursors. NewPgRuntime runs on an eventstore.PgStore
+// with Cursors in the consumer_cursors table; handlers write through
+// postgres.Conn, which joins the Cursor transaction. Each Consumer runs under
+// a lease, so only one process at a time processes it, and wakes up on
+// NOTIFY when a Listener is given. NewInMemoryRuntime runs on an
 // eventstore.InMemoryStore; its handlers register writes with
 // postgres.Stage so they roll back with the Cursor transaction.
+//
+// Consumers only see events below pg_snapshot_xmin (or the in-memory
+// equivalent), so an event of a transaction that commits late is never
+// skipped. Any open transaction that holds a transaction ID, in any
+// database of the cluster, delays visibility until it ends.
 //
 // Run all Consumers of a process with a Group:
 //

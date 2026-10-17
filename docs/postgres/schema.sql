@@ -83,6 +83,72 @@ CREATE TRIGGER events_notify
     FOR EACH STATEMENT EXECUTE FUNCTION public.events_notify();
 
 -- ---------------------------------------------------------------------------
+-- pkg/eventsourcing/consumer: one Cursor per Consumer. The Cursor is the
+-- last processed matching event; a filtered Cursor stays at its last
+-- matching event. Updates are compare-and-set on the expected Cursor, which
+-- fences a former lease holder. An empty event_types array means every
+-- type. stopped stays set until Resume.
+-- ---------------------------------------------------------------------------
+CREATE TABLE public.consumer_cursors (
+    name            TEXT        PRIMARY KEY,
+    transaction_id  XID8        NOT NULL DEFAULT '0',
+    global_position BIGINT      NOT NULL DEFAULT 0,
+    event_types     TEXT[]      NOT NULL,
+    stopped         BOOLEAN     NOT NULL DEFAULT false,
+    stopped_at      TIMESTAMPTZ NULL,
+    stopped_error   TEXT        NULL
+);
+
+-- consumer_pending counts the visible events after a Consumer's Cursor that
+-- match its event types, up to cap+1. Use it to guard a migration that
+-- switches a view to a new Projection version. It raises when the Consumer
+-- has no Cursor or is Stopped. Each event type is counted on its own index
+-- range.
+CREATE FUNCTION public.consumer_pending(consumer_name TEXT, cap INT) RETURNS INT
+    LANGUAGE plpgsql STABLE AS
+$$
+DECLARE
+    c       public.consumer_cursors;
+    horizon XID8 := pg_snapshot_xmin(pg_current_snapshot());
+    total   BIGINT;
+BEGIN
+    SELECT * INTO c FROM public.consumer_cursors WHERE name = consumer_name;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'consumer % has no cursor', consumer_name
+            USING ERRCODE = 'no_data_found';
+    END IF;
+    IF c.stopped THEN
+        RAISE EXCEPTION 'consumer % is stopped: %', consumer_name, c.stopped_error
+            USING ERRCODE = 'object_not_in_prerequisite_state';
+    END IF;
+
+    IF cardinality(c.event_types) = 0 THEN
+        SELECT count(*) INTO total FROM (
+            SELECT 1 FROM public.events e
+            WHERE (e.transaction_id, e.global_position) > (c.transaction_id, c.global_position)
+              AND e.transaction_id < horizon
+            ORDER BY e.transaction_id, e.global_position
+            LIMIT cap + 1
+        ) pending;
+    ELSE
+        SELECT COALESCE(sum(per_type.n), 0) INTO total
+        FROM unnest(c.event_types) AS t(event_type)
+        CROSS JOIN LATERAL (
+            SELECT count(*) AS n FROM (
+                SELECT 1 FROM public.events e
+                WHERE e.event_type = t.event_type
+                  AND (e.transaction_id, e.global_position) > (c.transaction_id, c.global_position)
+                  AND e.transaction_id < horizon
+                ORDER BY e.transaction_id, e.global_position
+                LIMIT cap + 1
+            ) pending
+        ) per_type;
+    END IF;
+    RETURN least(total, cap + 1);
+END
+$$;
+
+-- ---------------------------------------------------------------------------
 -- pkg/postgres/guard: tenant-scoped uniqueness rules.
 -- ---------------------------------------------------------------------------
 CREATE TABLE public.guards (

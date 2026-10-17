@@ -8,7 +8,7 @@ import (
 )
 
 // Runtime runs Consumers on one event log and keeps their Cursors. It is
-// implemented by InMemoryRuntime.
+// implemented by PgRuntime and InMemoryRuntime.
 type Runtime interface {
 	// Resume clears the Stopped state of the named Consumer, which then
 	// continues from its Cursor. It fails with ErrNotFound for an unknown
