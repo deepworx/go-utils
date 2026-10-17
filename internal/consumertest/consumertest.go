@@ -13,6 +13,9 @@ import (
 	"testing"
 	"testing/synctest"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/deepworx/go-utils/pkg/eventsourcing/consumer"
 	"github.com/deepworx/go-utils/pkg/eventsourcing/eventstore"
 	"github.com/deepworx/go-utils/pkg/postgres"
@@ -40,7 +43,15 @@ type Backend struct {
 type Option func(*config)
 
 type config struct {
-	synctest bool
+	synctest   bool
+	sequential bool
+}
+
+// Sequential runs the cases one after another. For Pg backends whose
+// databases share one cluster: pg_snapshot_xmin is cluster-wide, so a
+// transaction of a parallel case would hide fresh events from Drain.
+func Sequential() Option {
+	return func(c *config) { c.sequential = true }
 }
 
 // InBubble runs every case and its newBackend inside a testing/synctest
@@ -60,7 +71,9 @@ func Run(t *testing.T, newBackend func(t *testing.T, codec *eventstore.Codec) Ba
 	s := suite{newBackend: newBackend, synctest: cfg.synctest}
 	for _, tt := range cases(s) {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+			if !cfg.sequential {
+				t.Parallel()
+			}
 			if cfg.synctest {
 				synctest.Test(t, tt.fn)
 				return
@@ -92,4 +105,37 @@ func (e *InMemoryEffects) Keys(context.Context) ([]string, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return slices.Clone(e.keys), nil
+}
+
+// PgEffects is Effects for Pg backends. Record inserts through
+// postgres.Conn, so it joins the Cursor transaction in ctx.
+type PgEffects struct {
+	pool *pgxpool.Pool
+}
+
+// NewPgEffects creates the effects table in pool's database.
+func NewPgEffects(t *testing.T, pool *pgxpool.Pool) *PgEffects {
+	t.Helper()
+	_, err := pool.Exec(t.Context(), `CREATE TABLE consumertest_effects (
+		seq BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+		key TEXT NOT NULL)`)
+	if err != nil {
+		t.Fatalf("create effects table: %v", err)
+	}
+	return &PgEffects{pool: pool}
+}
+
+// Record inserts key.
+func (e *PgEffects) Record(ctx context.Context, key string) error {
+	_, err := postgres.Conn(ctx, e.pool).Exec(ctx, `INSERT INTO consumertest_effects (key) VALUES ($1)`, key)
+	return err
+}
+
+// Keys returns the committed keys.
+func (e *PgEffects) Keys(ctx context.Context) ([]string, error) {
+	rows, err := e.pool.Query(ctx, `SELECT key FROM consumertest_effects ORDER BY seq`)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowTo[string])
 }

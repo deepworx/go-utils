@@ -194,6 +194,8 @@ func (c *Consumer) processTransactional(ctx context.Context, from eventstore.Cur
 		return nil
 	case ctx.Err() != nil:
 		return context.Cause(ctx)
+	case errors.Is(err, errFenced):
+		return err
 	}
 	if failedAt > 0 {
 		if err := c.processTransactional(ctx, from, records[:failedAt]); err != nil {

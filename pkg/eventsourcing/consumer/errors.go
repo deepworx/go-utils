@@ -19,6 +19,10 @@ var (
 	ErrStopped = errors.New("consumer: stopped")
 	// ErrNotFound reports a Consumer name the Runtime does not know.
 	ErrNotFound = errors.New("consumer: not found")
+
+	// errFenced reports a Cursor update that found the Cursor moved: another
+	// runner took over the lease. The batch rolls back and is not retried.
+	errFenced = errors.New("consumer: cursor moved by another runner")
 )
 
 // Permanent marks err as hopeless: the Consumer goes Stopped at once instead

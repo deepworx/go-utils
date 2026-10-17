@@ -15,7 +15,27 @@ func init() {
 		}
 		return memFeed{codec: s.codec, log: s.log}, true
 	})
+	storehook.RegisterPgStore(func(store any) (any, bool) {
+		s, ok := store.(*PgStore)
+		if !ok || s == nil {
+			return nil, false
+		}
+		return pgSource{codec: s.codec, schema: s.schema}, true
+	})
 }
+
+// pgSource is what the Pg consumer runtime needs from a PgStore, reached
+// through internal/storehook. The runtime queries the events table itself.
+type pgSource struct {
+	codec  *Codec
+	schema string
+}
+
+// Codec returns the Codec the store encodes with.
+func (s pgSource) Codec() *Codec { return s.codec }
+
+// Schema returns the schema that qualifies the events table.
+func (s pgSource) Schema() string { return s.schema }
 
 // memFeed is the read side of an InMemoryStore for the in-memory consumer
 // runtime, reached through internal/storehook. Like Postgres below

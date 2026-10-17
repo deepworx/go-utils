@@ -52,6 +52,7 @@ type PgStoreConfig struct {
 // It appends only inside a Command transaction of a PgUnitOfWork.
 type PgStore struct {
 	pool    *pgxpool.Pool
+	schema  string
 	codec   *Codec
 	clock   func() time.Time
 	queries pgQueries
@@ -97,6 +98,7 @@ func NewPgStore(cfg PgStoreConfig, opts ...StoreOption) (*PgStore, error) {
 	}
 	return &PgStore{
 		pool:    cfg.Pool,
+		schema:  schema,
 		codec:   cfg.Codec,
 		clock:   newStoreOptions(opts).clock,
 		queries: newPgQueries(schema),
