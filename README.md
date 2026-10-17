@@ -14,7 +14,7 @@ go get github.com/deepworx/go-utils
 
 | Package | Import | Description |
 |---------|--------|-------------|
-| ctxutil | `pkg/ctxutil` | Context helpers (request ID, user claims) |
+| ctxutil | `pkg/ctxutil` | Context helpers (request ID, claims, tenant, actor, correlation, causation) |
 | shutdown | `pkg/shutdown` | Graceful shutdown orchestration |
 | otel | `pkg/otel` | OpenTelemetry initialization |
 | tracing | `pkg/tracing` | Manual span creation helpers |
@@ -45,6 +45,17 @@ ctx = ctxutil.WithClaims(ctx, ctxutil.Claims{UserID: "user-456", TenantID: "tena
 
 id, ok := ctxutil.RequestID(ctx)
 userID, ok := ctxutil.UserID(ctx)
+```
+
+Event metadata (empty strings and `uuid.Nil` count as absent):
+
+```go
+ctx = ctxutil.WithTenantID(ctx, "tenant-789")      // takes precedence over Claims.TenantID
+ctx = ctxutil.WithActor(ctx, "system:scheduler:daily-close")
+ctx = ctxutil.WithCorrelationID(ctx, "corr-1")
+ctx = ctxutil.WithCausationID(ctx, eventID)        // uuid.UUID of the causing event
+
+tenant, ok := ctxutil.TenantID(ctx) // explicit value, then Claims.TenantID
 ```
 
 ### shutdown
