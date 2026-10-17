@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -138,13 +139,71 @@ func TestApplyDefaults(t *testing.T) {
 	}
 }
 
-func TestWithTx_PanicRecovery(t *testing.T) {
+func TestWithTx(t *testing.T) {
 	t.Parallel()
 
-	// This test verifies the panic handling logic without a real database.
-	// The function should re-panic after attempting rollback.
-	// Since we can't test with a real pool here, we verify the sentinel error.
+	errBoom := errors.New("boom")
 
-	// The actual panic behavior would be tested in integration tests.
-	// Here we just verify the function signature and error handling pattern.
+	tests := []struct {
+		name      string
+		fn        func(tx pgx.Tx) error
+		wantErr   error
+		wantPanic bool
+		wantRows  int
+	}{
+		{
+			name:     "commits on success",
+			fn:       func(tx pgx.Tx) error { return insertTxRow(tx) },
+			wantRows: 1,
+		},
+		{
+			name: "rolls back on error",
+			fn: func(tx pgx.Tx) error {
+				if err := insertTxRow(tx); err != nil {
+					return err
+				}
+				return errBoom
+			},
+			wantErr: errBoom,
+		},
+		{
+			name: "rolls back and re-panics on panic",
+			fn: func(tx pgx.Tx) error {
+				if err := insertTxRow(tx); err != nil {
+					return err
+				}
+				panic("boom")
+			},
+			wantPanic: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			pool := newCounterPool(t)
+
+			var err error
+			panicked := func() (panicked bool) {
+				defer func() { panicked = recover() != nil }()
+				err = WithTx(context.Background(), pool, tt.fn)
+				return false
+			}()
+
+			if panicked != tt.wantPanic {
+				t.Fatalf("panicked = %v, want %v", panicked, tt.wantPanic)
+			}
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("err = %v, want %v", err, tt.wantErr)
+			}
+			if got := countRows(t, pool); got != tt.wantRows {
+				t.Fatalf("rows = %d, want %d", got, tt.wantRows)
+			}
+		})
+	}
+}
+
+func insertTxRow(tx pgx.Tx) error {
+	_, err := tx.Exec(context.Background(), `INSERT INTO uow_counter (n) VALUES (1)`)
+	return err
 }

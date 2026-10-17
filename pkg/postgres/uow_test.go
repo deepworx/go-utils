@@ -3,77 +3,239 @@ package postgres
 import (
 	"context"
 	"errors"
+	"os"
 	"testing"
+
+	"github.com/deepworx/go-utils/internal/pgtest"
+	"github.com/deepworx/go-utils/pkg/ctxutil"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func TestInMemoryUnitOfWork_Execute(t *testing.T) {
+func TestMain(m *testing.M) {
+	os.Exit(pgtest.Run(m))
+}
+
+func newCounterPool(t *testing.T) *pgxpool.Pool {
+	t.Helper()
+	pool := pgtest.New(t)
+	if _, err := pool.Exec(context.Background(), `CREATE TABLE uow_counter (n int NOT NULL)`); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+	return pool
+}
+
+func countRows(t *testing.T, q Querier) int {
+	t.Helper()
+	var n int
+	if err := q.QueryRow(context.Background(), `SELECT count(*) FROM uow_counter`).Scan(&n); err != nil {
+		t.Fatalf("count rows: %v", err)
+	}
+	return n
+}
+
+func insertRow(ctx context.Context, pool *pgxpool.Pool) error {
+	_, err := Conn(ctx, pool).Exec(ctx, `INSERT INTO uow_counter (n) VALUES (1)`)
+	return err
+}
+
+func TestPgUnitOfWorkExecute(t *testing.T) {
 	t.Parallel()
 
+	errBoom := errors.New("boom")
+
 	tests := []struct {
-		name    string
-		fn      func(ctx context.Context, tx Transaction) error
-		wantErr error
+		name     string
+		fn       func(ctx context.Context, uow *PgUnitOfWork, pool *pgxpool.Pool) error
+		wantErr  error
+		wantRows int
 	}{
 		{
-			name:    "success",
-			fn:      func(ctx context.Context, tx Transaction) error { return nil },
-			wantErr: nil,
-		},
-		{
-			name:    "error propagates",
-			fn:      func(ctx context.Context, tx Transaction) error { return errors.New("test error") },
-			wantErr: errors.New("test error"),
-		},
-		{
-			name: "tx returns nil",
-			fn: func(ctx context.Context, tx Transaction) error {
-				if tx.Tx() != nil {
-					return errors.New("expected nil from tx.Tx()")
-				}
-				return nil
+			name: "commits on success",
+			fn: func(ctx context.Context, _ *PgUnitOfWork, pool *pgxpool.Pool) error {
+				return insertRow(ctx, pool)
 			},
-			wantErr: nil,
+			wantRows: 1,
 		},
 		{
-			name: "context is passed through",
-			fn: func(ctx context.Context, tx Transaction) error {
-				if ctx.Value(testContextKey("test")) != "value" {
-					return errors.New("context not passed")
+			name: "rolls back on error",
+			fn: func(ctx context.Context, _ *PgUnitOfWork, pool *pgxpool.Pool) error {
+				if err := insertRow(ctx, pool); err != nil {
+					return err
 				}
-				return nil
+				return errBoom
 			},
-			wantErr: nil,
+			wantErr: errBoom,
+		},
+		{
+			name: "nested execute joins the outer transaction",
+			fn: func(ctx context.Context, uow *PgUnitOfWork, pool *pgxpool.Pool) error {
+				outer := TxFromContext(ctx)
+				if err := uow.Execute(ctx, func(ctx context.Context) error {
+					if TxFromContext(ctx) != outer {
+						return errors.New("inner execute opened a new transaction")
+					}
+					return insertRow(ctx, pool)
+				}); err != nil {
+					return err
+				}
+				return errBoom
+			},
+			wantErr: errBoom,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			uow := NewInMemoryUnitOfWork()
-			ctx := context.WithValue(context.Background(), testContextKey("test"), "value")
-			err := uow.Execute(ctx, tt.fn)
+			ctx := context.Background()
+			pool := newCounterPool(t)
+			uow := NewUnitOfWork(pool)
 
-			if tt.wantErr == nil && err != nil {
-				t.Errorf("unexpected error: %v", err)
+			err := uow.Execute(ctx, func(ctx context.Context) error {
+				return tt.fn(ctx, uow, pool)
+			})
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("err = %v, want %v", err, tt.wantErr)
 			}
-			if tt.wantErr != nil && (err == nil || err.Error() != tt.wantErr.Error()) {
-				t.Errorf("got error %v, want %v", err, tt.wantErr)
+			if got := countRows(t, pool); got != tt.wantRows {
+				t.Fatalf("rows = %d, want %d", got, tt.wantRows)
 			}
 		})
 	}
 }
 
-// testContextKey avoids staticcheck warning about string context keys.
-type testContextKey string
-
-func TestUnitOfWork_InterfaceSatisfaction(t *testing.T) {
+func TestPgUnitOfWorkRollsBackOnPanic(t *testing.T) {
 	t.Parallel()
-	var _ UnitOfWork = (*PgUnitOfWork)(nil)
-	var _ UnitOfWork = (*InMemoryUnitOfWork)(nil)
+	pool := newCounterPool(t)
+
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("panic was swallowed")
+			}
+		}()
+		_ = NewUnitOfWork(pool).Execute(context.Background(), func(ctx context.Context) error {
+			if err := insertRow(ctx, pool); err != nil {
+				return err
+			}
+			panic("boom")
+		})
+	}()
+
+	if got := countRows(t, pool); got != 0 {
+		t.Fatalf("rows = %d, want 0", got)
+	}
 }
 
-func TestTransaction_InterfaceSatisfaction(t *testing.T) {
+func TestConn(t *testing.T) {
 	t.Parallel()
-	var _ Transaction = (*pgTransaction)(nil)
-	var _ Transaction = nilTransaction{}
+	ctx := context.Background()
+	pool := newCounterPool(t)
+
+	if got := Conn(ctx, pool); got != Querier(pool) {
+		t.Fatalf("Conn outside a transaction = %T, want the pool", got)
+	}
+	if TxFromContext(ctx) != nil {
+		t.Fatal("TxFromContext outside a transaction is not nil")
+	}
+
+	err := NewUnitOfWork(pool).Execute(ctx, func(ctx context.Context) error {
+		tx := TxFromContext(ctx)
+		if tx == nil {
+			return errors.New("TxFromContext inside a transaction is nil")
+		}
+		if got := Conn(ctx, pool); got != Querier(tx) {
+			return errors.New("Conn inside a transaction is not the transaction")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPgUnitOfWorkTxOptions(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	pool := pgtest.New(t)
+	uow := NewUnitOfWork(pool, TxOptions(pgx.TxOptions{
+		IsoLevel:   pgx.Serializable,
+		AccessMode: pgx.ReadOnly,
+	}))
+
+	err := uow.Execute(ctx, func(ctx context.Context) error {
+		var iso, readOnly string
+		if err := Conn(ctx, pool).QueryRow(ctx,
+			`SELECT current_setting('transaction_isolation'), current_setting('transaction_read_only')`,
+		).Scan(&iso, &readOnly); err != nil {
+			return err
+		}
+		if iso != "serializable" || readOnly != "on" {
+			t.Errorf("isolation = %q, read only = %q, want serializable and on", iso, readOnly)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPgUnitOfWorkTenantSetting(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		opts []UnitOfWorkOption
+		want string
+	}{
+		{name: "set with SetLocalTenant", opts: []UnitOfWorkOption{SetLocalTenant()}, want: "tenant-a"},
+		{name: "unset by default", want: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			pool := pgtest.New(t)
+			ctx := ctxutil.WithTenantID(context.Background(), "tenant-a")
+
+			var got string
+			err := NewUnitOfWork(pool, tt.opts...).Execute(ctx, func(ctx context.Context) error {
+				return Conn(ctx, pool).QueryRow(ctx,
+					`SELECT coalesce(current_setting('app.tenant_id', true), '')`,
+				).Scan(&got)
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tt.want {
+				t.Fatalf("app.tenant_id = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPgUnitOfWorkTenantSettingIsTransactionLocal(t *testing.T) {
+	t.Parallel()
+	ctx := ctxutil.WithTenantID(context.Background(), "tenant-a")
+
+	cfg := pgtest.New(t).Config()
+	cfg.MaxConns = 1
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+
+	if err := NewUnitOfWork(pool, SetLocalTenant()).Execute(ctx, func(context.Context) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+
+	var got string
+	if err := pool.QueryRow(ctx, `SELECT coalesce(current_setting('app.tenant_id', true), '')`).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got != "" {
+		t.Fatalf("app.tenant_id after commit = %q, want unset", got)
+	}
 }
