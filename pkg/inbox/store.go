@@ -9,6 +9,10 @@
 // FOR UPDATE SKIP LOCKED and fenced by a claim generation, so a Worker whose
 // claim expired can never settle a message claimed again elsewhere. There is
 // no ordering guarantee.
+//
+// Operators List messages, Redrive Parked ones and Discard the ones that
+// should not be handled. CleanupJob deletes settled messages after a
+// retention period; Parked messages stay until an operator resolves them.
 package inbox
 
 import (

@@ -14,4 +14,20 @@ var (
 	// ErrRunning is returned by Run and Drain while another Run or Drain of
 	// the same Worker is active.
 	ErrRunning = errors.New("inbox: worker already running")
+
+	// ErrNotFound is returned by Store.Redrive and Store.Discard for an
+	// unknown message ID.
+	ErrNotFound = errors.New("inbox: message not found")
+
+	// ErrNotParked is returned by Store.Redrive for a message that is not
+	// Parked.
+	ErrNotParked = errors.New("inbox: message not parked")
+
+	// ErrSettled is returned by Store.Discard for a message that is already
+	// done, ignored or discarded.
+	ErrSettled = errors.New("inbox: message already settled")
+
+	// ErrInvalidDiscard is returned by Store.Discard for a DiscardInput
+	// without By.
+	ErrInvalidDiscard = errors.New("inbox: invalid discard")
 )
