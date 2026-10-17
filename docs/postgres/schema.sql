@@ -55,3 +55,19 @@ CREATE TABLE public.scheduler_runs (
     error         TEXT,
     PRIMARY KEY (job, business_date)
 );
+
+-- ---------------------------------------------------------------------------
+-- pkg/scheduler: one row per interval job. due_at is the next instant the job
+-- is due: the next grid point, or the retry time of an aborted attempt.
+-- finished_at IS NULL marks a running attempt; error IS NULL marks a
+-- successful one.
+-- ---------------------------------------------------------------------------
+CREATE TABLE public.scheduler_intervals (
+    job         TEXT        PRIMARY KEY,
+    due_at      TIMESTAMPTZ NOT NULL,
+    started_at  TIMESTAMPTZ NOT NULL,
+    finished_at TIMESTAMPTZ,
+    attempt     INT         NOT NULL,
+    failures    INT         NOT NULL DEFAULT 0,
+    error       TEXT
+);

@@ -101,7 +101,11 @@ func (s *Scheduler) reportLastSuccess(ctx context.Context, jobs []Job) error {
 	}
 	rows, err := s.pool.Query(ctx, `
 		SELECT job, max(finished_at)
-		FROM `+s.runsTable+`
+		FROM (
+			SELECT job, finished_at, error FROM `+s.runsTable+`
+			UNION ALL
+			SELECT job, finished_at, error FROM `+s.intervalsTable+`
+		) runs
 		WHERE job = ANY($1) AND finished_at IS NOT NULL AND error IS NULL
 		GROUP BY job`, names)
 	if err != nil {
