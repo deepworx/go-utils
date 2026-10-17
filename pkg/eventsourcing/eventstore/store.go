@@ -38,6 +38,9 @@ type appendInput struct {
 	streamType string
 	expected   int
 	events     []aggregate.Event
+	// traceContext is the W3C traceparent of the send span, stored with
+	// every event; "" stores none.
+	traceContext string
 }
 
 // StoreOption configures a Store.

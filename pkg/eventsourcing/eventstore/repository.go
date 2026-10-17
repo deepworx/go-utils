@@ -8,6 +8,8 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/deepworx/go-utils/internal/aggregateaccess"
+	"github.com/deepworx/go-utils/internal/telemetry"
+	"github.com/deepworx/go-utils/pkg/ctxutil"
 	"github.com/deepworx/go-utils/pkg/eventsourcing/aggregate"
 )
 
@@ -32,21 +34,33 @@ type Repository[I aggregate.ID, A any, P interface {
 	store      Store
 	uow        UnitOfWork
 	streamType string
+	inst       instruments
 }
 
 // NewRepository returns a Repository for A. It panics if cfg lacks a Store
 // or UnitOfWork.
+//
+// Create and Update record an INTERNAL Command span with a PRODUCER send
+// span whose traceparent is stored on the appended events. Loads and
+// Commands record histograms labelled by stream type. Providers default to
+// the OTel globals, so all of it is a no-op until otel.Setup.
 func NewRepository[I aggregate.ID, A any, P interface {
 	*A
 	aggregate.Root[I]
-}](cfg RepositoryConfig) *Repository[I, A, P] {
+}](cfg RepositoryConfig, opts ...RepositoryOption) *Repository[I, A, P] {
 	if cfg.Store == nil || cfg.UnitOfWork == nil {
 		panic("eventstore: NewRepository: Store and UnitOfWork are required")
 	}
+	var o repositoryOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
+	streamType := P(new(A)).StreamType()
 	return &Repository[I, A, P]{
 		store:      cfg.Store,
 		uow:        cfg.UnitOfWork,
-		streamType: P(new(A)).StreamType(),
+		streamType: streamType,
+		inst:       newInstruments(o.providers, streamType),
 	}
 }
 
@@ -57,7 +71,7 @@ func NewRepository[I aggregate.ID, A any, P interface {
 // with ErrStreamMismatch.
 func (r *Repository[I, A, P]) Create(ctx context.Context, id I, fn func(ctx context.Context, agg P) error) (CommandResult, error) {
 	var res CommandResult
-	err := r.uow.Within(ctx, uuid.UUID(id), func(ctx context.Context) error {
+	err := r.command(ctx, telemetry.SpanCreate(r.streamType), id, func(ctx context.Context) error {
 		envs, err := r.loadEnvelopes(ctx, loadInput{stream: uuid.UUID(id)})
 		if err != nil {
 			return err
@@ -69,7 +83,7 @@ func (r *Repository[I, A, P]) Create(ctx context.Context, id I, fn func(ctx cont
 		if err := fn(ctx, agg); err != nil {
 			return err
 		}
-		res, err = r.save(ctx, agg)
+		res, err = r.saveCommand(ctx, agg)
 		return err
 	})
 	if err != nil {
@@ -103,7 +117,7 @@ func (r *Repository[I, A, P]) Update(ctx context.Context, id I, fn func(ctx cont
 		opt(&o)
 	}
 	var res CommandResult
-	err := r.uow.Within(ctx, uuid.UUID(id), func(ctx context.Context) error {
+	err := r.command(ctx, telemetry.SpanUpdate(r.streamType), id, func(ctx context.Context) error {
 		agg, err := r.load(ctx, loadInput{stream: uuid.UUID(id)})
 		if err != nil {
 			return err
@@ -114,7 +128,7 @@ func (r *Repository[I, A, P]) Update(ctx context.Context, id I, fn func(ctx cont
 		if err := fn(ctx, agg); err != nil {
 			return err
 		}
-		res, err = r.save(ctx, agg)
+		res, err = r.saveCommand(ctx, agg)
 		return err
 	})
 	if err != nil {
@@ -181,6 +195,23 @@ func (r *Repository[I, A, P]) Save(ctx context.Context, agg P) (CommandResult, e
 	return res, nil
 }
 
+// command runs fn in the Command transaction for id, traced as the
+// Command span name.
+func (r *Repository[I, A, P]) command(ctx context.Context, name string, id I, fn func(ctx context.Context) error) error {
+	tenant, _ := ctxutil.TenantID(ctx)
+	cmd := commandInput{name: name, tenant: tenant, stream: uuid.UUID(id).String()}
+	return r.inst.command(ctx, cmd, func(ctx context.Context) error {
+		return r.uow.Within(ctx, uuid.UUID(id), fn)
+	})
+}
+
+// saveCommand saves agg and annotates the Command span with the event
+// types it raised.
+func (r *Repository[I, A, P]) saveCommand(ctx context.Context, agg P) (CommandResult, error) {
+	raising(ctx, aggregateaccess.Uncommitted[I](agg))
+	return r.save(ctx, agg)
+}
+
 func (r *Repository[I, A, P]) save(ctx context.Context, agg P) (CommandResult, error) {
 	tx, err := commandTxFor(ctx, aggregateaccess.UUID[I](agg))
 	if err != nil {
@@ -191,11 +222,16 @@ func (r *Repository[I, A, P]) save(ctx context.Context, agg P) (CommandResult, e
 	if len(raised) == 0 {
 		return CommandResult{Version: version}, nil
 	}
-	pos, err := r.store.append(ctx, appendInput{
-		tx:         tx,
-		streamType: r.streamType,
-		expected:   version - len(raised),
-		events:     raised,
+	var pos Cursor
+	err = r.inst.send(ctx, func(ctx context.Context, traceContext string) error {
+		pos, err = r.store.append(ctx, appendInput{
+			tx:           tx,
+			streamType:   r.streamType,
+			expected:     version - len(raised),
+			events:       raised,
+			traceContext: traceContext,
+		})
+		return err
 	})
 	if err != nil {
 		return CommandResult{}, err
@@ -211,7 +247,12 @@ func (r *Repository[I, A, P]) allocate(id I) P {
 }
 
 func (r *Repository[I, A, P]) load(ctx context.Context, in loadInput) (P, error) {
-	envs, err := r.loadOwnEnvelopes(ctx, in)
+	var envs []Envelope
+	err := r.inst.load(ctx, func() (int, error) {
+		var err error
+		envs, err = r.loadOwnEnvelopes(ctx, in)
+		return len(envs), err
+	})
 	if err != nil {
 		return nil, err
 	}
