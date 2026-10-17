@@ -102,20 +102,25 @@ func Ping(ctx context.Context, pool *pgxpool.Pool) error {
 // The transaction is committed if fn returns nil; rolled back otherwise.
 // Panics within fn cause rollback and re-panic.
 func WithTx(ctx context.Context, pool *pgxpool.Pool, fn func(tx pgx.Tx) error) error {
-	tx, err := pool.Begin(ctx)
+	return runTx(ctx, pool, pgx.TxOptions{}, fn)
+}
+
+func runTx(ctx context.Context, pool *pgxpool.Pool, opts pgx.TxOptions, fn func(tx pgx.Tx) error) error {
+	tx, err := pool.BeginTx(ctx, opts)
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
 	}
 
+	rollbackCtx := context.WithoutCancel(ctx)
 	defer func() {
 		if r := recover(); r != nil {
-			_ = tx.Rollback(ctx)
+			_ = tx.Rollback(rollbackCtx)
 			panic(r)
 		}
 	}()
 
 	if err := fn(tx); err != nil {
-		if rbErr := tx.Rollback(ctx); rbErr != nil {
+		if rbErr := tx.Rollback(rollbackCtx); rbErr != nil {
 			return fmt.Errorf("rollback transaction: %w (original: %w)", rbErr, err)
 		}
 		return err
