@@ -125,7 +125,7 @@ func serve(ctx context.Context, in serveInput) error {
 		return fmt.Errorf("tracker worker: %w", err)
 	}
 
-	sched, err := scheduler.New(in.Pool, claims, scheduler.Config{Schema: in.Schema, Location: time.UTC})
+	sched, err := scheduler.New(scheduler.Config{Pool: in.Pool, Claims: claims, Schema: in.Schema, Location: time.UTC})
 	if err != nil {
 		return fmt.Errorf("scheduler: %w", err)
 	}

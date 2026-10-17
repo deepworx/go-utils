@@ -28,3 +28,8 @@ func (d Date) String() string {
 func (d Date) midnight(loc *time.Location) time.Time {
 	return time.Date(d.Year, d.Month, d.Day, 0, 0, 0, 0, loc)
 }
+
+// next returns the calendar date after d.
+func (d Date) next() Date {
+	return DateOf(time.Date(d.Year, d.Month, d.Day+1, 0, 0, 0, 0, time.UTC))
+}

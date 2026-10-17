@@ -32,9 +32,9 @@ var ErrPanic = errors.New("scheduler: run panicked")
 // plus NotBefore on now's Business date and that date has no claimed run;
 // earlier dates are never considered. An interval job is due once now has
 // reached its next grid point; it then runs once for the latest grid point,
-// however many were missed. Afterwards the leader reports the
-// last_success gauge. Aborted runs are logged, not returned; Tick returns
-// database and lease errors.
+// however many were missed. Afterwards Tick keeps or takes the leader
+// lease, whose holder reports the last_success gauge. Aborted runs are
+// logged, not returned; Tick returns database and lease errors.
 func (s *Scheduler) Tick(ctx context.Context, now time.Time) error {
 	jobs := s.registered()
 	errs := make([]error, len(jobs)+1)
@@ -56,7 +56,7 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	var wg sync.WaitGroup
 	for _, job := range jobs {
 		wg.Go(func() {
-			s.loop(ctx, job.Name, func() error { return s.tickJob(ctx, job, time.Now()) })
+			s.loop(ctx, job.Name, func() error { return s.tickJob(ctx, job, s.now()) })
 		})
 	}
 	s.loop(ctx, leaderName, func() error { return s.lead(ctx, jobs) })
@@ -98,13 +98,21 @@ func (s *Scheduler) tickJob(ctx context.Context, job Job, now time.Time) error {
 	if err != nil || !claimed {
 		return err
 	}
-	return s.execute(leaseCtx, job, run, now)
+	return s.execute(leaseCtx, executeInput{job: job, run: run, startedAt: now})
 }
 
 // dailyDue returns the instant a daily job becomes due on now's Business
-// date.
+// date: local midnight plus NotBefore. On a day shorter than that, such as
+// the 23h spring-forward day, it is moved back to the same distance before
+// the next midnight, so the date still runs.
 func (s *Scheduler) dailyDue(job Job, now time.Time) time.Time {
-	return DateOf(now.In(s.location)).midnight(s.location).Add(job.NotBefore)
+	date := DateOf(now.In(s.location))
+	due := date.midnight(s.location).Add(job.NotBefore)
+	next := date.next().midnight(s.location)
+	if due.Before(next) {
+		return due
+	}
+	return next.Add(job.NotBefore - 24*time.Hour)
 }
 
 // claimDaily inserts the run row for now's Business date, or takes over an
@@ -137,7 +145,16 @@ func (s *Scheduler) claimDaily(ctx context.Context, job Job, now time.Time) (Run
 	return Run{Date: date, Due: s.dailyDue(job, now), Location: s.location, Attempt: attempt}, true, nil
 }
 
-func (s *Scheduler) execute(ctx context.Context, job Job, run Run, now time.Time) error {
+// executeInput is a claimed run of job that started at startedAt.
+type executeInput struct {
+	job       Job
+	run       Run
+	startedAt time.Time
+}
+
+// execute runs a claimed run and records its end.
+func (s *Scheduler) execute(ctx context.Context, in executeInput) error {
+	job, run := in.job, in.run
 	logger := s.logger.With(slog.String(telemetry.LogJob, job.Name), slog.Int(telemetry.LogAttempt, run.Attempt))
 	ctx, span := s.tracer.Start(ctx, telemetry.SpanSchedulerRun(job.Name),
 		trace.WithNewRoot(),
@@ -155,7 +172,7 @@ func (s *Scheduler) execute(ctx context.Context, job Job, run Run, now time.Time
 	if n := len(outcome.Failures); n > 0 {
 		s.metrics.candidateFailures.Add(ctx, int64(n), jobAttr)
 		for _, f := range outcome.Failures {
-			logger.WarnContext(ctx, "scheduler: candidate failed", slog.String("candidate", f.Candidate), slog.Any(telemetry.LogError, f.Err))
+			logger.WarnContext(ctx, "scheduler: candidate failed", slog.String(telemetry.LogCandidate, f.Candidate), slog.Any(telemetry.LogError, f.Err))
 		}
 	}
 	if runErr != nil {
@@ -168,8 +185,8 @@ func (s *Scheduler) execute(ctx context.Context, job Job, run Run, now time.Time
 	return s.finish(ctx, finishInput{
 		job:        job,
 		run:        run,
-		startedAt:  now,
-		finishedAt: now.Add(elapsed),
+		startedAt:  in.startedAt,
+		finishedAt: in.startedAt.Add(elapsed),
 		failures:   len(outcome.Failures),
 		err:        runErr,
 	})
