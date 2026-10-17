@@ -39,7 +39,7 @@ const scope = "github.com/deepworx/go-utils/pkg/postgres/lease"
 
 const (
 	defaultPingInterval = 5 * time.Second
-	// statementTimeout bounds acquire, unlock and close statements so that a
+	// statementTimeout bounds ping, acquire, unlock and close statements so that a
 	// cancelled caller never interrupts a statement on the shared connection.
 	statementTimeout = 5 * time.Second
 )
@@ -73,7 +73,8 @@ func (k Key) String() string { return k.Namespace + "/" + k.Name }
 // Config configures Claims.
 type Config struct {
 	// PingInterval is how often the lock connection is checked. Lease loss
-	// is noticed at most this late. Defaults to 5s.
+	// is noticed at most this late, plus up to 5s for a ping that hangs; a
+	// slow ping is not a loss. Defaults to 5s.
 	PingInterval time.Duration
 	// Logger defaults to slog.Default().
 	Logger *slog.Logger
@@ -201,7 +202,7 @@ func (c *Claims) watch(ctx context.Context, conn *pgx.Conn) error {
 func (c *Claims) ping(ctx context.Context, conn *pgx.Conn) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	pingCtx, cancel := context.WithTimeout(ctx, c.pingInterval)
+	pingCtx, cancel := context.WithTimeout(ctx, statementTimeout)
 	defer cancel()
 	if err := conn.Ping(pingCtx); err != nil {
 		return fmt.Errorf("ping lock connection: %w", err)
