@@ -89,6 +89,10 @@ otel.Setup(ctx, otel.Config{ServiceName: "my-service", ServiceVersion: "1.0.0"})
 
 Env vars: `OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER`, `OTEL_LOGS_EXPORTER` (`otlp|console|none`)
 
+- Histograms are exported as base-2 exponential (native) histograms. Set `Config.Histograms` to `otel.HistogramsExplicit` (`histograms: explicit`) for explicit buckets.
+- `service.instance.id` is a random UUID per process; override it via `OTEL_RESOURCE_ATTRIBUTES=service.instance.id=...`.
+- `Setup` wraps the `slog.Default()` handler in `slogutil.ContextHandler`, so `slog.InfoContext` etc. carry the ctx correlation fields.
+
 ### tracing
 
 Span wrapper with automatic error recording. Works without TracerProvider (no-op).
