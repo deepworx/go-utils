@@ -33,7 +33,9 @@ func NewInMemoryStore(codec *Codec, opts ...StoreOption) *InMemoryStore {
 		clock: o.clock,
 		log: &memLog{
 			streams: make(map[streamKey][]memRecord),
+			byType:  make(map[string][]memRecord),
 			pending: make(map[*commandTx]*memPending),
+			changed: make(chan struct{}),
 		},
 	}
 }
@@ -53,12 +55,17 @@ type memRecord struct {
 type memLog struct {
 	mu      sync.Mutex
 	streams map[streamKey][]memRecord
-	// all holds every committed record ordered by Cursor.
+	// all holds every committed record ordered by Cursor, byType the same
+	// per event type.
 	all     []memRecord
+	byType  map[string][]memRecord
 	lastXID uint64
 	lastPos int64
 	// pending holds the appends of open Command transactions.
 	pending map[*commandTx]*memPending
+	// changed is closed and replaced whenever a commit or rollback may have
+	// made more events visible.
+	changed chan struct{}
 }
 
 type memPending struct {
@@ -189,17 +196,30 @@ func (l *memLog) commit(tx *commandTx) {
 	k := streamKey{tenant: tx.tenant, stream: tx.stream}
 	l.streams[k] = append(l.streams[k], p.records...)
 	for _, r := range p.records {
-		i, _ := slices.BinarySearchFunc(l.all, r.env.Cursor, func(r memRecord, c Cursor) int {
-			return r.env.Cursor.Compare(c)
-		})
-		l.all = slices.Insert(l.all, i, r)
+		l.all = insertByCursor(l.all, r)
+		l.byType[r.env.EventType] = insertByCursor(l.byType[r.env.EventType], r)
 	}
+	l.broadcast()
 }
+
+func insertByCursor(records []memRecord, r memRecord) []memRecord {
+	i, _ := slices.BinarySearchFunc(records, r.env.Cursor, compareRecord)
+	return slices.Insert(records, i, r)
+}
+
+func compareRecord(r memRecord, c Cursor) int { return r.env.Cursor.Compare(c) }
 
 func (l *memLog) discard(tx *commandTx) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	delete(l.pending, tx)
+	l.broadcast()
+}
+
+// broadcast wakes every waiter on changed. The caller holds l.mu.
+func (l *memLog) broadcast() {
+	close(l.changed)
+	l.changed = make(chan struct{})
 }
 
 // InMemoryUnitOfWork runs Command transactions in memory. It serializes
