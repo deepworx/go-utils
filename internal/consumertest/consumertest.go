@@ -37,6 +37,9 @@ type Backend struct {
 	UnitOfWork eventstore.UnitOfWork
 	Runtime    consumer.Runtime
 	Effects    Effects
+	// Restart returns a new Runtime over the same log and Cursors, as after
+	// a process restart. Runtimes it returned earlier are no longer used.
+	Restart func(t *testing.T) consumer.Runtime
 }
 
 // Option configures Run.
@@ -69,7 +72,7 @@ func Run(t *testing.T, newBackend func(t *testing.T, codec *eventstore.Codec) Ba
 		opt(&cfg)
 	}
 	s := suite{newBackend: newBackend, synctest: cfg.synctest}
-	for _, tt := range cases(s) {
+	for _, tt := range append(cases(s), filterChangeCases(s)...) {
 		t.Run(tt.name, func(t *testing.T) {
 			if !cfg.sequential {
 				t.Parallel()

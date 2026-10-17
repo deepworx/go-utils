@@ -156,7 +156,7 @@ func New(rt Runtime, cfg Config, opts ...Option) (*Consumer, error) {
 	}
 	types = slices.Compact(slices.Sorted(slices.Values(types)))
 
-	p, err := rt.attach(attachInput{name: cfg.Name, eventTypes: types})
+	p, err := rt.attach(attachInput{name: cfg.Name, eventTypes: types, mode: cfg.Mode})
 	if err != nil {
 		return nil, fmt.Errorf("new consumer: %w", err)
 	}

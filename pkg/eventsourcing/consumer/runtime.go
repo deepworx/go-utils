@@ -21,15 +21,20 @@ type attachInput struct {
 	name string
 	// eventTypes is the filter; empty means every type.
 	eventTypes []string
+	// mode decides which filter changes the Cursor claim accepts.
+	mode Mode
 }
 
 // port is what a Consumer needs from its Runtime: its Cursor, the filtered
 // log, and Cursor transactions.
 type port interface {
 	codec() *eventstore.Codec
-	// acquire takes the Consumer's lease. It fails with ErrRunning while
-	// another runner holds it. The returned ctx ends when the lease is lost.
+	// acquire takes the Consumer's lease and claims its Cursor, checking a
+	// changed filter. It fails with ErrRunning while another runner holds
+	// it. The returned ctx ends when the lease is lost.
 	acquire(ctx context.Context) (context.Context, func(), error)
+	// load reads the Cursor. While the lease is held it first checks a
+	// filter not yet accepted, e.g. after Resume of a rejected change.
 	load(ctx context.Context) (cursorState, error)
 	// read returns up to limit visible matching events after the Cursor
 	// after, in Cursor order.
