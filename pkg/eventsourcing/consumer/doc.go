@@ -1,0 +1,38 @@
+// Package consumer runs Consumers: named, Cursor-tracked readers of the
+// event log.
+//
+// A Consumer reads the events matching its event-type filter in Cursor
+// order and hands each one to its Handler, usually a Router built from typed
+// handlers:
+//
+//	r := consumer.NewRouter(codec)
+//	consumer.On(r, func(ctx context.Context, env eventstore.Envelope, e TaskOpened) error {
+//		return q.InsertTask(ctx, postgres.Conn(ctx, pool), env.StreamID, e.Title)
+//	})
+//	tasks, err := consumer.New(rt, consumer.Config{
+//		Name:    "task_list",
+//		Mode:    consumer.Transactional,
+//		Handler: r,
+//	})
+//
+// In Transactional mode the handler's writes and the Cursor commit in one
+// Cursor transaction, so every event takes effect exactly once. In
+// OwnTransaction mode the Cursor advances after each event, so delivery is
+// at least once.
+//
+// A failing event is retried with backoff and then the Consumer goes
+// Stopped; it never skips an event. Permanent errors, panics and decode
+// errors stop it at once. A Stopped Consumer stays at its Cursor until
+// Runtime.Resume.
+//
+// The Runtime keeps the Cursors. NewInMemoryRuntime runs on an
+// eventstore.InMemoryStore; its handlers register writes with
+// postgres.Stage so they roll back with the Cursor transaction.
+//
+// Run all Consumers of a process with a Group:
+//
+//	err := consumer.Group{tasks, mailer}.Run(ctx)
+//
+// Tests and one-shot jobs call Drain, which processes synchronously up to
+// the head of the log at the time of the call.
+package consumer
