@@ -7,6 +7,8 @@ func init() {
 		Backend:       runtimeBackend,
 		ReactorOption: reactorOption,
 		IsPermanent:   isPermanent,
+		Changes:       changesOf,
+		Reset:         reset,
 	})
 }
 
