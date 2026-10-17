@@ -24,6 +24,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/metric/noop"
 
 	"github.com/deepworx/go-utils/internal/backoff"
 	"github.com/deepworx/go-utils/internal/telemetry"
@@ -48,7 +49,8 @@ type Notification struct {
 
 // Config configures a Listener.
 type Config struct {
-	// Buffer is the capacity of each Subscription's channel. Default 64.
+	// Buffer is the capacity of each Subscription's channel. Values below 1
+	// use the default of 64.
 	Buffer int
 	// Logger receives connection errors. Default slog.Default().
 	Logger *slog.Logger
@@ -82,14 +84,8 @@ type Listener struct {
 
 // NewListener returns a Listener that hijacks its connection from pool. It
 // does nothing until Run is called.
-func NewListener(pool *pgxpool.Pool, cfg Config, opts ...Option) (*Listener, error) {
-	if pool == nil {
-		return nil, ErrNilPool
-	}
-	if cfg.Buffer < 0 {
-		return nil, fmt.Errorf("notify: buffer %d is negative", cfg.Buffer)
-	}
-	if cfg.Buffer == 0 {
+func NewListener(pool *pgxpool.Pool, cfg Config, opts ...Option) *Listener {
+	if cfg.Buffer <= 0 {
 		cfg.Buffer = defaultBuffer
 	}
 	if cfg.Logger == nil {
@@ -102,11 +98,13 @@ func NewListener(pool *pgxpool.Pool, cfg Config, opts ...Option) (*Listener, err
 	meter := providers.Meter(scope)
 	reconnects, err := telemetry.NotifyReconnects.Int64Counter(meter)
 	if err != nil {
-		return nil, fmt.Errorf("notify: create reconnects counter: %w", err)
+		cfg.Logger.Warn("notify: create reconnects counter", slog.Any(telemetry.LogError, err))
+		reconnects = noop.Int64Counter{}
 	}
 	gaps, err := telemetry.NotifyGaps.Int64Counter(meter)
 	if err != nil {
-		return nil, fmt.Errorf("notify: create gaps counter: %w", err)
+		cfg.Logger.Warn("notify: create gaps counter", slog.Any(telemetry.LogError, err))
+		gaps = noop.Int64Counter{}
 	}
 	return &Listener{
 		pool:       pool,
@@ -117,7 +115,7 @@ func NewListener(pool *pgxpool.Pool, cfg Config, opts ...Option) (*Listener, err
 		wake:       make(chan struct{}, 1),
 		onConn:     make(chan func(context.Context, *pgx.Conn)),
 		subs:       make(map[string]map[*Subscription]struct{}),
-	}, nil
+	}
 }
 
 // Subscribe returns a Subscription for channel. The first Subscription of a

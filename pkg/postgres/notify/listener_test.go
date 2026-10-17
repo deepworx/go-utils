@@ -48,19 +48,9 @@ func TestCheckChannel(t *testing.T) {
 
 const waitTimeout = 10 * time.Second
 
-func TestNewListenerRejectsInvalidConfig(t *testing.T) {
-	t.Parallel()
-	if _, err := notify.NewListener(nil, notify.Config{}); !errors.Is(err, notify.ErrNilPool) {
-		t.Errorf("NewListener(nil) = %v, want ErrNilPool", err)
-	}
-}
-
 func TestSubscribeRejectsInvalidChannel(t *testing.T) {
 	t.Parallel()
-	l, err := notify.NewListener(&pgxpool.Pool{}, notify.Config{})
-	if err != nil {
-		t.Fatalf("NewListener: %v", err)
-	}
+	l := notify.NewListener(nil, notify.Config{})
 	if _, err := l.Subscribe(strings.Repeat("x", 64)); !errors.Is(err, notify.ErrInvalidChannel) {
 		t.Errorf("Subscribe(64 bytes) = %v, want ErrInvalidChannel", err)
 	}
@@ -74,10 +64,7 @@ func TestRunReturnsWhenContextEndsWithoutLeaks(t *testing.T) {
 	}
 	baseline := runtime.NumGoroutine()
 
-	l, err := notify.NewListener(pool, notify.Config{})
-	if err != nil {
-		t.Fatalf("NewListener: %v", err)
-	}
+	l := notify.NewListener(pool, notify.Config{})
 	sub, err := l.Subscribe("lifecycle")
 	if err != nil {
 		t.Fatalf("Subscribe: %v", err)
@@ -346,10 +333,7 @@ func TestNotifyReachesEverySubscriberOfChannel(t *testing.T) {
 
 func startListener(t *testing.T, pool *pgxpool.Pool, cfg notify.Config, opts ...notify.Option) *notify.Listener {
 	t.Helper()
-	l, err := notify.NewListener(pool, cfg, opts...)
-	if err != nil {
-		t.Fatalf("NewListener: %v", err)
-	}
+	l := notify.NewListener(pool, cfg, opts...)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- l.Run(ctx) }()
