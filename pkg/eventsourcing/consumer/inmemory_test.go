@@ -12,11 +12,16 @@ func TestInMemoryContract(t *testing.T) {
 	t.Parallel()
 	consumertest.Run(t, func(_ *testing.T, codec *eventstore.Codec) consumertest.Backend {
 		store := eventstore.NewInMemoryStore(codec)
+		rt := consumer.NewInMemoryRuntime(consumer.InMemoryRuntimeConfig{Store: store})
 		return consumertest.Backend{
 			Store:      store,
 			UnitOfWork: eventstore.NewInMemoryUnitOfWork(),
-			Runtime:    consumer.NewInMemoryRuntime(consumer.InMemoryRuntimeConfig{Store: store}),
+			Runtime:    rt,
 			Effects:    &consumertest.InMemoryEffects{},
+			Restart: func(*testing.T) consumer.Runtime {
+				rt = consumer.RestartInMemory(rt)
+				return rt
+			},
 		}
 	}, consumertest.InBubble())
 }
