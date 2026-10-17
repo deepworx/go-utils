@@ -30,6 +30,15 @@ linters:
             - github.com/google/uuid
             - github.com/deepworx/go-utils/pkg/eventsourcing/aggregate
             - github.com/deepworx/go-utils/internal/aggregateaccess
+        quickstart-domain:
+          list-mode: strict
+          files:
+            - "**/internal/quickstart/todo/**"
+            - "!$test"
+          allow:
+            - $gostd
+            - github.com/google/uuid
+            - github.com/deepworx/go-utils/pkg/eventsourcing/aggregate
         aggregatetest-no-testing:
           list-mode: lax
           files:
