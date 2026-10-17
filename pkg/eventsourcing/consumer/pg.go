@@ -65,6 +65,7 @@ type PgRuntime struct {
 	uow      *postgres.PgUnitOfWork
 	listener *notify.Listener
 	claims   *lease.Claims
+	schema   string
 	channel  string
 	ns       string
 	queries  pgQueries
@@ -103,6 +104,7 @@ func NewPgRuntime(cfg PgRuntimeConfig) (*PgRuntime, error) {
 		uow:      postgres.NewUnitOfWork(cfg.Pool),
 		listener: cfg.Listener,
 		claims:   cfg.Claims,
+		schema:   schema,
 		channel:  schema + ".events",
 		ns:       schema + ".consumer",
 		queries:  newPgQueries(schema),

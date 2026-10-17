@@ -23,8 +23,9 @@ type InMemoryRuntimeConfig struct {
 // postgres.InMemoryUnitOfWork transaction, so handler writes registered with
 // postgres.Stage commit or roll back together with the Cursor.
 type InMemoryRuntime struct {
-	feed memFeed
-	uow  *postgres.InMemoryUnitOfWork
+	feed    memFeed
+	uow     *postgres.InMemoryUnitOfWork
+	changes *memChanges
 
 	mu      sync.Mutex
 	cursors map[string]*memCursor
@@ -63,6 +64,7 @@ func NewInMemoryRuntime(cfg InMemoryRuntimeConfig) *InMemoryRuntime {
 	return &InMemoryRuntime{
 		feed:    f.(memFeed),
 		uow:     postgres.NewInMemoryUnitOfWork(),
+		changes: newMemChanges(),
 		cursors: make(map[string]*memCursor),
 	}
 }
@@ -109,6 +111,7 @@ func (rt *InMemoryRuntime) restart() *InMemoryRuntime {
 	next := &InMemoryRuntime{
 		feed:    rt.feed,
 		uow:     postgres.NewInMemoryUnitOfWork(),
+		changes: rt.changes,
 		cursors: make(map[string]*memCursor, len(rt.cursors)),
 	}
 	for name, c := range rt.cursors {
