@@ -17,3 +17,25 @@ BEGIN
     END IF;
 END
 $$;
+
+-- ---------------------------------------------------------------------------
+-- pkg/postgres/guard: tenant-scoped uniqueness rules.
+-- ---------------------------------------------------------------------------
+CREATE TABLE public.guards (
+    tenant_id  TEXT        NOT NULL,
+    rule       TEXT        NOT NULL,
+    key        TEXT        NOT NULL,
+    claimed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (tenant_id, rule, key)
+);
+
+-- ---------------------------------------------------------------------------
+-- pkg/postgres/numbering: tenant-scoped gapless numbers.
+-- ---------------------------------------------------------------------------
+CREATE TABLE public.identifier_sequences (
+    tenant_id  TEXT   NOT NULL,
+    context    TEXT   NOT NULL,
+    name       TEXT   NOT NULL,
+    last_value BIGINT NOT NULL CHECK (last_value > 0),
+    PRIMARY KEY (tenant_id, context, name)
+);
