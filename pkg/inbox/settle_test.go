@@ -19,7 +19,7 @@ func TestHandlerOutcomeSetsStatus(t *testing.T) {
 	tests := []struct {
 		name            string
 		result          func() error
-		wantStatus      string
+		wantStatus      inbox.Status
 		wantError       string
 		wantRedelivered bool
 	}{
@@ -35,7 +35,7 @@ func TestHandlerOutcomeSetsStatus(t *testing.T) {
 			t.Parallel()
 
 			clk := newClock()
-			store, pool := newStore(t, inbox.WithClock(clk.Now))
+			store, _ := newStore(t, inbox.WithClock(clk.Now))
 			mustInsert(t, store, inbox.Message{Source: "src", Key: "k1", Type: "t"})
 			rec := &recorder{}
 			w := newWorker(t, store, inbox.Config{
@@ -46,7 +46,7 @@ func TestHandlerOutcomeSetsStatus(t *testing.T) {
 
 			drain(t, w)
 
-			got := readMessage(t, pool, "src", "k1")
+			got := mustGet(t, store, "src", "k1")
 			if got.Status != tt.wantStatus || got.Error != tt.wantError {
 				t.Errorf("message = %+v, want status %q, error %q", got, tt.wantStatus, tt.wantError)
 			}
@@ -64,7 +64,7 @@ func TestFailingMessageFollowsRetryScheduleThenParks(t *testing.T) {
 	t.Parallel()
 
 	clk := newClock()
-	store, pool := newStore(t, inbox.WithClock(clk.Now))
+	store, _ := newStore(t, inbox.WithClock(clk.Now))
 	mustInsert(t, store, inbox.Message{Source: "src", Key: "k1", Type: "t"})
 	rec := &recorder{}
 	w := newWorker(t, store, inbox.Config{
@@ -98,7 +98,7 @@ func TestFailingMessageFollowsRetryScheduleThenParks(t *testing.T) {
 			t.Errorf("delivery %d Attempt = %d, want %d", i, d.Attempt, i+1)
 		}
 	}
-	if got := readMessage(t, pool, "src", "k1"); got.Status != "parked" || got.Attempts != 3 {
+	if got := mustGet(t, store, "src", "k1"); got.Status != "parked" || got.Attempts != 3 {
 		t.Errorf("message = %+v, want parked after 3 attempts", got)
 	}
 }
@@ -107,7 +107,7 @@ func TestDefaultRetriesParkAfterEightAttempts(t *testing.T) {
 	t.Parallel()
 
 	clk := newClock()
-	store, pool := newStore(t, inbox.WithClock(clk.Now))
+	store, _ := newStore(t, inbox.WithClock(clk.Now))
 	mustInsert(t, store, inbox.Message{Source: "src", Key: "k1", Type: "t"})
 	rec := &recorder{}
 	w := newWorker(t, store, inbox.Config{
@@ -126,7 +126,7 @@ func TestDefaultRetriesParkAfterEightAttempts(t *testing.T) {
 	if got := len(rec.deliveries()); got != 8 {
 		t.Errorf("%d attempts, want 8", got)
 	}
-	if got := readMessage(t, pool, "src", "k1"); got.Status != "parked" {
+	if got := mustGet(t, store, "src", "k1"); got.Status != "parked" {
 		t.Errorf("status = %q, want parked", got.Status)
 	}
 }
@@ -145,7 +145,7 @@ func TestSettleAfterLostClaimIsDropped(t *testing.T) {
 	t.Parallel()
 
 	clk := newClock()
-	store, pool := newStore(t, inbox.WithClock(clk.Now))
+	store, _ := newStore(t, inbox.WithClock(clk.Now))
 	mustInsert(t, store, inbox.Message{Source: "src", Key: "k1", Type: "t"})
 
 	started, release := make(chan struct{}), make(chan struct{})
@@ -166,7 +166,7 @@ func TestSettleAfterLostClaimIsDropped(t *testing.T) {
 	if err := <-staleDone; err != nil {
 		t.Fatalf("stale Drain() error = %v", err)
 	}
-	if got := readMessage(t, pool, "src", "k1"); got.Status != "pending" || got.Attempts != 2 {
+	if got := mustGet(t, store, "src", "k1"); got.Status != "pending" || got.Attempts != 2 {
 		t.Fatalf("after stale settle: message = %+v, want pending at attempt 2 (stale done dropped)", got)
 	}
 
@@ -174,7 +174,7 @@ func TestSettleAfterLostClaimIsDropped(t *testing.T) {
 	if err := <-freshDone; err != nil {
 		t.Fatalf("fresh Drain() error = %v", err)
 	}
-	if got := readMessage(t, pool, "src", "k1"); got.Status != "ignored" {
+	if got := mustGet(t, store, "src", "k1"); got.Status != "ignored" {
 		t.Errorf("after fresh settle: status = %q, want ignored", got.Status)
 	}
 }
@@ -224,7 +224,7 @@ func TestInsertRolledBackWithTransactionLeavesNoRow(t *testing.T) {
 	if got := len(rec.deliveries()); got != 0 {
 		t.Errorf("handled %d messages, want 0", got)
 	}
-	if got := countMessages(t, pool); got != 0 {
+	if got := len(listAll(t, store)); got != 0 {
 		t.Errorf("%d rows, want 0", got)
 	}
 }
@@ -277,7 +277,7 @@ func TestHandlerContextCarriesMessageMetadata(t *testing.T) {
 func TestWorkerHandlesOnlyItsSource(t *testing.T) {
 	t.Parallel()
 
-	store, pool := newStore(t)
+	store, _ := newStore(t)
 	mustInsert(t, store, inbox.Message{Source: "a", Key: "k", Type: "t"})
 	mustInsert(t, store, inbox.Message{Source: "b", Key: "k", Type: "t"})
 
@@ -287,7 +287,7 @@ func TestWorkerHandlesOnlyItsSource(t *testing.T) {
 	if got := rec.deliveries(); len(got) != 1 || got[0].Source != "a" {
 		t.Errorf("deliveries = %+v, want only source a", got)
 	}
-	if got := readMessage(t, pool, "b", "k"); got.Status != "pending" || got.Attempts != 0 {
+	if got := mustGet(t, store, "b", "k"); got.Status != "pending" || got.Attempts != 0 {
 		t.Errorf("source b message = %+v, want untouched", got)
 	}
 }

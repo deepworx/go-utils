@@ -21,33 +21,26 @@ func newStore(t *testing.T, opts ...inbox.StoreOption) (*inbox.Store, *pgxpool.P
 	return store, pool
 }
 
-// messageRow is the stored state of one message. Until the operator read
-// API exists (DWX-248), tests read it from the table.
-type messageRow struct {
-	Status   string
-	Attempts int
-	Error    string
-}
-
-func readMessage(t *testing.T, pool *pgxpool.Pool, source, key string) messageRow {
+// listAll returns every stored message.
+func listAll(t *testing.T, store *inbox.Store) []inbox.Record {
 	t.Helper()
-	var r messageRow
-	err := pool.QueryRow(t.Context(),
-		`SELECT status, attempts, COALESCE(error, '') FROM public.inbox_messages WHERE source = $1 AND key = $2`,
-		source, key).Scan(&r.Status, &r.Attempts, &r.Error)
+	rs, err := store.List(t.Context(), inbox.Filter{Limit: 1000})
 	if err != nil {
-		t.Fatalf("read message %s/%s: %v", source, key, err)
+		t.Fatalf("List() error = %v", err)
 	}
-	return r
+	return rs
 }
 
-func countMessages(t *testing.T, pool *pgxpool.Pool) int {
+// mustGet returns the stored message source/key.
+func mustGet(t *testing.T, store *inbox.Store, source, key string) inbox.Record {
 	t.Helper()
-	var n int
-	if err := pool.QueryRow(t.Context(), `SELECT count(*) FROM public.inbox_messages`).Scan(&n); err != nil {
-		t.Fatalf("count messages: %v", err)
+	for _, r := range listAll(t, store) {
+		if r.Source == source && r.Key == key {
+			return r
+		}
 	}
-	return n
+	t.Fatalf("message %s/%s not listed", source, key)
+	return inbox.Record{}
 }
 
 func mustInsert(t *testing.T, store *inbox.Store, m inbox.Message) {
