@@ -44,6 +44,13 @@ func cases(s suite) []testCase {
 		{"StoppedDoesNotEndRun", s.stoppedDoesNotEndRun},
 		{"GroupStopsOnCancel", s.groupStopsOnCancel},
 		{"Names", s.names},
+		{"Await/ZeroIsFresh", s.awaitZeroIsFresh},
+		{"Await/FreshAfterDrain", s.awaitFreshAfterDrain},
+		{"Await/StaleStopped", s.awaitStaleStopped},
+		{"Await/DefaultBudget", s.awaitDefaultBudget},
+		{"Await/SkipsNonMatchingEvents", s.awaitSkipsNonMatchingEvents},
+		{"Await/WaitsForEarlierTransaction", s.awaitWaitsForEarlierTransaction},
+		{"Await/WhileRunning", s.awaitWhileRunning},
 	}
 }
 
@@ -577,3 +584,170 @@ func eventually(t *testing.T, cond func() bool) {
 		time.Sleep(5 * time.Millisecond)
 	}
 }
+
+func (s suite) awaitZeroIsFresh(t *testing.T) {
+	h := s.setup(t)
+	h.write(userCtx("t1"), added{Name: "a"})
+	c := h.newConsumer(consumer.Config{Name: "await_zero", Mode: consumer.Transactional, Handler: consumer.HandlerFunc(noop)})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if got := c.Await(ctx, eventstore.Cursor{}); got != consumer.Fresh {
+		t.Errorf("Await(zero) = %v, want Fresh", got)
+	}
+}
+
+func (s suite) awaitFreshAfterDrain(t *testing.T) {
+	h := s.setup(t)
+	pos := h.write(userCtx("t1"), added{Name: "a"})
+	c := h.newConsumer(consumer.Config{Name: "await_drain", Mode: consumer.Transactional, Handler: consumer.HandlerFunc(noop)})
+
+	if got := await(c, pos, 50*time.Millisecond); got != consumer.Stale {
+		t.Errorf("Await before Drain = %v, want Stale", got)
+	}
+	if err := c.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	if got := await(c, pos, 10*time.Second); got != consumer.Fresh {
+		t.Errorf("Await after Drain = %v, want Fresh", got)
+	}
+}
+
+func (s suite) awaitStaleStopped(t *testing.T) {
+	h := s.setup(t)
+	pos := h.write(userCtx("t1"), added{Name: "a"})
+	c := h.newConsumer(consumer.Config{
+		Name: "await_stopped",
+		Mode: consumer.Transactional,
+		Handler: consumer.HandlerFunc(func(context.Context, eventstore.Envelope) error {
+			return consumer.Permanent(errors.New("broken"))
+		}),
+	})
+	if err := c.Drain(context.Background()); !errors.Is(err, consumer.ErrStopped) {
+		t.Fatalf("Drain = %v, want ErrStopped", err)
+	}
+
+	start := time.Now()
+	if got := await(c, pos, time.Minute); got != consumer.StaleStopped {
+		t.Errorf("Await = %v, want StaleStopped", got)
+	}
+	if elapsed := time.Since(start); elapsed >= 10*time.Second {
+		t.Errorf("Await took %s, want it to return before the budget", elapsed)
+	}
+}
+
+func (s suite) awaitDefaultBudget(t *testing.T) {
+	h := s.setup(t)
+	pos := h.write(userCtx("t1"), added{Name: "a"})
+	c := h.newConsumer(consumer.Config{Name: "await_budget", Mode: consumer.Transactional, Handler: consumer.HandlerFunc(noop)})
+
+	start := time.Now()
+	if got := c.Await(context.Background(), pos); got != consumer.Stale {
+		t.Errorf("Await = %v, want Stale", got)
+	}
+	elapsed := time.Since(start)
+	if s.synctest && elapsed != 2*time.Second || elapsed < 2*time.Second || elapsed > 5*time.Second {
+		t.Errorf("Await without deadline took %s, want 2s", elapsed)
+	}
+}
+
+// awaitSkipsNonMatchingEvents: a filtered Consumer is Fresh at its last
+// matching event even when pos is a later event of another type.
+func (s suite) awaitSkipsNonMatchingEvents(t *testing.T) {
+	h := s.setup(t)
+	ctx := userCtx("t1")
+	h.write(ctx, added{Name: "a"})
+	other := h.write(ctx, renamed{Name: "b"})
+	c := h.newConsumer(consumer.Config{
+		Name:       "await_filtered",
+		Mode:       consumer.Transactional,
+		EventTypes: []string{added{}.EventType()},
+		Handler:    consumer.HandlerFunc(noop),
+	})
+
+	if got := await(c, other, 50*time.Millisecond); got != consumer.Stale {
+		t.Errorf("Await before Drain = %v, want Stale (a matching event is pending)", got)
+	}
+	if err := c.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	if got := await(c, other, 10*time.Second); got != consumer.Fresh {
+		t.Errorf("Await at the last matching event = %v, want Fresh", got)
+	}
+
+	h.write(ctx, renamed{Name: "c"})
+	matching := h.write(ctx, added{Name: "d"})
+	if got := await(c, matching, 50*time.Millisecond); got != consumer.Stale {
+		t.Errorf("Await on a new matching event = %v, want Stale", got)
+	}
+}
+
+// awaitWaitsForEarlierTransaction: an open transaction that started before
+// pos may still commit a matching event below pos, so pos is not covered
+// until it ends.
+func (s suite) awaitWaitsForEarlierTransaction(t *testing.T) {
+	h := s.setup(t)
+	ctx := userCtx("t1")
+	c := h.newConsumer(consumer.Config{
+		Name:       "await_open_tx",
+		Mode:       consumer.Transactional,
+		EventTypes: []string{added{}.EventType()},
+		Handler:    consumer.HandlerFunc(noop),
+	})
+
+	early := itemID(uuid.Must(uuid.NewV7()))
+	appended := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- h.backend.UnitOfWork.Execute(ctx, uuid.UUID(early), func(ctx context.Context) error {
+			_, err := h.items.Create(ctx, early, func(_ context.Context, i *item) error {
+				aggregate.Raise(i, added{Name: "early"})
+				return nil
+			})
+			close(appended)
+			<-release
+			return err
+		})
+	}()
+	<-appended
+	pos := h.write(ctx, renamed{Name: "late"})
+
+	if got := await(c, pos, 50*time.Millisecond); got != consumer.Stale {
+		t.Errorf("Await while an earlier transaction is open = %v, want Stale", got)
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatalf("early transaction: %v", err)
+	}
+	if got := await(c, pos, 50*time.Millisecond); got != consumer.Stale {
+		t.Errorf("Await with the early event pending = %v, want Stale", got)
+	}
+	if err := c.Drain(context.Background()); err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	if got := await(c, pos, 10*time.Second); got != consumer.Fresh {
+		t.Errorf("Await after Drain = %v, want Fresh", got)
+	}
+}
+
+func (s suite) awaitWhileRunning(t *testing.T) {
+	h := s.setup(t)
+	c := h.newConsumer(consumer.Config{Name: "await_run", Mode: consumer.OwnTransaction, Handler: consumer.HandlerFunc(noop)})
+	stop := runInBackground(c)
+	t.Cleanup(func() { _ = stop() })
+
+	pos := h.write(userCtx("t1"), added{Name: "a"})
+	if got := await(c, pos, 10*time.Second); got != consumer.Fresh {
+		t.Errorf("Await = %v, want Fresh", got)
+	}
+}
+
+// await calls c.Await with a budget of d.
+func await(c *consumer.Consumer, pos eventstore.Cursor, d time.Duration) consumer.Freshness {
+	ctx, cancel := context.WithTimeout(context.Background(), d)
+	defer cancel()
+	return c.Await(ctx, pos)
+}
+
+func noop(context.Context, eventstore.Envelope) error { return nil }

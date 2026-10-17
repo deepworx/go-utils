@@ -101,6 +101,14 @@ func (f memFeed) Head(types []string) Cursor {
 	return head
 }
 
+// Horizon returns the transaction ID below which every Command transaction
+// has ended, like pg_snapshot_xmin.
+func (f memFeed) Horizon() uint64 {
+	f.log.mu.Lock()
+	defer f.log.mu.Unlock()
+	return f.log.horizon()
+}
+
 // ranges returns the Cursor-ordered record lists to read for types. The
 // caller holds l.mu.
 func (l *memLog) ranges(types []string) [][]memRecord {
