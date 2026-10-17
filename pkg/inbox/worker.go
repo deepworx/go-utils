@@ -361,9 +361,9 @@ func (w *Worker) logOutcome(ctx context.Context, logger *slog.Logger, st settlem
 	switch outcome(st) {
 	case outcomeRetry:
 		logger.WarnContext(ctx, "inbox: handler failed, retrying", slog.Time("retry_at", st.RetryAt), slog.String(telemetry.LogError, st.Error))
-	case statusParked:
+	case string(StatusParked):
 		logger.ErrorContext(ctx, "inbox: message parked", slog.String(telemetry.LogError, st.Error))
-	case statusIgnored:
+	case string(StatusIgnored):
 		logger.DebugContext(ctx, "inbox: message ignored", slog.String("reason", st.Error))
 	}
 }
@@ -371,10 +371,10 @@ func (w *Worker) logOutcome(ctx context.Context, logger *slog.Logger, st settlem
 const outcomeRetry = "retry"
 
 func outcome(st settlement) string {
-	if st.Status == statusPending {
+	if st.Status == StatusPending {
 		return outcomeRetry
 	}
-	return st.Status
+	return string(st.Status)
 }
 
 // call runs the Handler with the message's context and Timeout and turns a
@@ -412,19 +412,19 @@ func (w *Worker) settlement(c claimed, err error) settlement {
 	)
 	switch {
 	case err == nil:
-		st.Status = statusDone
+		st.Status = StatusDone
 	case errors.As(err, &ignore):
-		st.Status, st.Error = statusIgnored, ignore.reason
+		st.Status, st.Error = StatusIgnored, ignore.reason
 	case errors.As(err, &permanent):
-		st.Status, st.Error = statusParked, permanent.err.Error()
+		st.Status, st.Error = StatusParked, permanent.err.Error()
 	default:
 		st.Error = err.Error()
 		delay, ok := w.retries.Delay(c.Attempt, nil)
 		if !ok {
-			st.Status = statusParked
+			st.Status = StatusParked
 			break
 		}
-		st.Status, st.RetryAt = statusPending, w.store.now().Add(delay)
+		st.Status, st.RetryAt = StatusPending, w.store.now().Add(delay)
 	}
 	return st
 }
@@ -483,7 +483,7 @@ func (w *Worker) recordGauges(ctx context.Context) error {
 	}
 	source := telemetry.AttrSource.String(w.source)
 	for status, n := range counts.ByStatus {
-		w.metrics.messages.Record(ctx, n, metric.WithAttributes(source, telemetry.AttrStatus.String(status)))
+		w.metrics.messages.Record(ctx, n, metric.WithAttributes(source, telemetry.AttrStatus.String(string(status))))
 	}
 	w.metrics.oldestAge.Record(ctx, counts.OldestPending.Seconds(), metric.WithAttributes(source))
 	return nil

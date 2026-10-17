@@ -8,16 +8,24 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// Status values of inbox_messages.status.
+// Status is the state of a stored message.
+type Status string
+
+// Statuses of a stored message.
 const (
-	statusPending   = "pending"
-	statusDone      = "done"
-	statusIgnored   = "ignored"
-	statusParked    = "parked"
-	statusDiscarded = "discarded"
+	// StatusPending is due for a first attempt or a retry, or claimed.
+	StatusPending Status = "pending"
+	// StatusDone was handled.
+	StatusDone Status = "done"
+	// StatusIgnored was ignored by its Handler.
+	StatusIgnored Status = "ignored"
+	// StatusParked failed for good and waits for Redrive or Discard.
+	StatusParked Status = "parked"
+	// StatusDiscarded was discarded by an operator.
+	StatusDiscarded Status = "discarded"
 )
 
-var statuses = []string{statusPending, statusDone, statusIgnored, statusParked, statusDiscarded}
+var statuses = []Status{StatusPending, StatusDone, StatusIgnored, StatusParked, StatusDiscarded}
 
 // claimed is a message claimed by a Worker. generation fences its settle.
 type claimed struct {
@@ -77,7 +85,7 @@ func (s *Store) claim(ctx context.Context, in claimInput) ([]claimed, error) {
 type settlement struct {
 	ID         int64
 	Generation int64
-	Status     string
+	Status     Status
 	Error      string
 	// RetryAt is the next due time when Status is pending.
 	RetryAt time.Time
@@ -88,7 +96,7 @@ type settlement struct {
 func (s *Store) settle(ctx context.Context, st settlement) (bool, error) {
 	now := s.now()
 	var settledAt, retryAt *time.Time
-	if st.Status == statusPending {
+	if st.Status == StatusPending {
 		retryAt = &st.RetryAt
 	} else {
 		settledAt = &now
@@ -111,13 +119,13 @@ func (s *Store) settle(ctx context.Context, st settlement) (bool, error) {
 
 // sourceCounts are the polled gauge values of one Source.
 type sourceCounts struct {
-	ByStatus map[string]int64
+	ByStatus map[Status]int64
 	// OldestPending is the age of the oldest pending message, or 0.
 	OldestPending time.Duration
 }
 
 func (s *Store) counts(ctx context.Context, source string) (sourceCounts, error) {
-	out := sourceCounts{ByStatus: make(map[string]int64, len(statuses))}
+	out := sourceCounts{ByStatus: make(map[Status]int64, len(statuses))}
 	for _, st := range statuses {
 		out.ByStatus[st] = 0
 	}
@@ -126,7 +134,7 @@ func (s *Store) counts(ctx context.Context, source string) (sourceCounts, error)
 		return out, fmt.Errorf("inbox: count %s: %w", source, err)
 	}
 	var (
-		status string
+		status Status
 		n      int64
 	)
 	_, err = pgx.ForEachRow(rows, []any{&status, &n}, func() error {
