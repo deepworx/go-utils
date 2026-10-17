@@ -16,16 +16,23 @@ import (
 	"github.com/deepworx/go-utils/pkg/postgres/notify"
 )
 
-// ErrOutsideHandler reports Notify called outside the Handler of a
-// Projection version.
-var ErrOutsideHandler = errors.New("projection: notify outside a projection handler")
+var (
+	// ErrOutsideHandler reports Notify called outside the Handler of a
+	// Projection version.
+	ErrOutsideHandler = errors.New("projection: notify outside a projection handler")
+	// ErrEmptyEntity reports Notify without an entity name.
+	ErrEmptyEntity = errors.New("projection: notify: empty entity")
+)
 
 // Change tells that a read model entity changed, so a live UI can refetch
 // it.
 type Change struct {
+	// Tenant is the Tenant of the event whose handler sent the Change.
 	Tenant string
+	// Entity names the kind of read model entity, as passed to Notify.
 	Entity string
-	ID     uuid.UUID
+	// ID identifies the entity.
+	ID uuid.UUID
 	// Gap reports that changes may have been lost (a full buffer or a
 	// reconnect); the other fields are empty. Refetch everything shown.
 	Gap bool
@@ -73,7 +80,7 @@ func (h *handler) EventTypes() []string {
 // sent inside the Cursor transaction, so subscribers only see it once the
 // transaction commits, and never when the handler fails. In the shadow
 // version it does nothing. Outside a handler it fails with
-// ErrOutsideHandler.
+// ErrOutsideHandler, without an entity with ErrEmptyEntity.
 //
 // A PgRuntime sends it with pg_notify on the channel <schema>.changes; an
 // InMemoryRuntime delivers it in process.
@@ -85,7 +92,7 @@ func Notify(ctx context.Context, entity string, id uuid.UUID) error {
 	case n.changes == nil:
 		return nil
 	case entity == "":
-		return errors.New("projection: notify: empty entity")
+		return ErrEmptyEntity
 	}
 	tenant, _ := ctxutil.TenantID(ctx)
 	payload, err := json.Marshal(changePayload{Tenant: tenant, Entity: entity, ID: id})
@@ -108,10 +115,11 @@ type Subscription struct {
 }
 
 // Subscribe returns a Subscription to the Changes sent on rt from now on.
-// Close it when done. On a PgRuntime it listens through the runtime's
-// Listener and fails with consumer.ErrInvalidConfig when there is none;
-// changes sent before the LISTEN took effect are not delivered.
-func Subscribe(rt consumer.Runtime) (*Subscription, error) {
+// It ends when ctx ends or on Close, whichever comes first; C is closed
+// then. On a PgRuntime it listens through the runtime's Listener and fails
+// with consumer.ErrInvalidConfig when there is none; changes sent before
+// the LISTEN took effect are not delivered.
+func Subscribe(ctx context.Context, rt consumer.Runtime) (*Subscription, error) {
 	changes, ok := consumerhook.RuntimeChanges(rt)
 	if !ok {
 		return nil, fmt.Errorf("projection: subscribe: unknown runtime %T: %w", rt, consumer.ErrInvalidConfig)
@@ -126,16 +134,20 @@ func Subscribe(rt consumer.Runtime) (*Subscription, error) {
 		done:   make(chan struct{}),
 		exited: make(chan struct{}),
 	}
-	go s.forward()
+	go s.forward(ctx)
 	return s, nil
 }
 
-// forward decodes the feed into s.out until Close or the end of the feed.
-func (s *Subscription) forward() {
+// forward decodes the feed into s.out until ctx ends, Close or the end of
+// the feed, and then closes the feed.
+func (s *Subscription) forward(ctx context.Context) {
 	defer close(s.exited)
 	defer close(s.out)
+	defer s.feed.Close()
 	for {
 		select {
+		case <-ctx.Done():
+			return
 		case <-s.done:
 			return
 		case n, ok := <-s.feed.C():
@@ -144,6 +156,8 @@ func (s *Subscription) forward() {
 			}
 			select {
 			case s.out <- decode(n):
+			case <-ctx.Done():
+				return
 			case <-s.done:
 				return
 			}
@@ -172,6 +186,5 @@ func (s *Subscription) Close() {
 	s.once.Do(func() {
 		close(s.done)
 		<-s.exited
-		s.feed.Close()
 	})
 }

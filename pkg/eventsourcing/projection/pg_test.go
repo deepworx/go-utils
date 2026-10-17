@@ -86,7 +86,7 @@ func newPgEnv(t *testing.T, codec *eventstore.Codec) pgEnv {
 // probe changes until one arrives.
 func pgSubscribe(t *testing.T, rt consumer.Runtime, pool *pgxpool.Pool) *projection.Subscription {
 	t.Helper()
-	sub, err := projection.Subscribe(rt)
+	sub, err := projection.Subscribe(t.Context(), rt)
 	if err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
@@ -248,7 +248,7 @@ func TestPgSubscribeWithoutListener(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewPgRuntime: %v", err)
 	}
-	if _, err := projection.Subscribe(rt); err == nil {
+	if _, err := projection.Subscribe(t.Context(), rt); err == nil {
 		t.Error("Subscribe without a Listener = nil, want an error")
 	}
 }

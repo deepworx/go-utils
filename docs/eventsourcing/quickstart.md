@@ -338,7 +338,7 @@ when the Cursor transaction commits. On Postgres it goes out on the channel
 `<schema>.changes`. A live UI subscribes per Runtime:
 
 ```go
-sub, err := projection.Subscribe(rt) // PgRuntime: needs its Listener
+sub, err := projection.Subscribe(ctx, rt) // PgRuntime: needs its Listener
 defer sub.Close()
 for c := range sub.C() {
 	if c.Gap {

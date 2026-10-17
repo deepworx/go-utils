@@ -505,7 +505,7 @@ func newInMemoryBackend(_ *testing.T, codec *eventstore.Codec) backend {
 		model:   &memModel{tables: map[int][]string{}},
 		subscribe: func(t *testing.T) *projection.Subscription {
 			t.Helper()
-			sub, err := projection.Subscribe(rt)
+			sub, err := projection.Subscribe(t.Context(), rt)
 			if err != nil {
 				t.Fatalf("Subscribe: %v", err)
 			}

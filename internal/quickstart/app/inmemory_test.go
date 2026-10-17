@@ -43,7 +43,7 @@ func TestInMemoryBoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new app: %v", err)
 	}
-	changes, err := projection.Subscribe(rt)
+	changes, err := projection.Subscribe(t.Context(), rt)
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
