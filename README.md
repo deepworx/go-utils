@@ -21,7 +21,7 @@ go get github.com/deepworx/go-utils
 | postgres | `pkg/postgres` | Database pool, transactions, and UnitOfWork |
 | nats | `pkg/nats` | NATS/JetStream connection with tracing and metrics |
 | grpchealth | `pkg/grpchealth` | gRPC health check aggregator |
-| slogutil | `pkg/slogutil` | Global slog logger setup |
+| slogutil | `pkg/slogutil` | Global slog logger setup and ctx-correlated logs |
 | koanfutil | `pkg/koanfutil` | Koanf configuration helpers |
 | jwtauth | `pkg/connectrpc/jwtauth` | JWT authentication interceptor |
 | recovery | `pkg/connectrpc/recovery` | Panic recovery interceptor |
@@ -195,6 +195,11 @@ slogutil.Setup(slogutil.Config{Level: "debug", Format: "json"})
 slogutil.Setup(slogutil.DefaultConfig())
 ```
 
+`Setup` wraps the handler in `slogutil.ContextHandler`, which adds `request_id`,
+`tenant_id`, `user_id`, `correlation_id`, `trace_id` and `span_id` from the ctx
+to every record logged with a `*Context` method. Wrap a custom handler with
+`slogutil.NewContextHandler(h)`.
+
 ### koanfutil
 
 Helpers for [koanf](https://github.com/knadh/koanf) configuration loading.
@@ -249,7 +254,7 @@ mux.Handle(servicepb.NewServiceHandler(
 ))
 ```
 
-Logs include: procedure, panic value, stack trace, request_id (if present).
+Logs include: procedure, panic value, stack trace. Request fields come from `slogutil.ContextHandler`.
 
 ### connectrpc/logging
 
@@ -262,7 +267,7 @@ mux.Handle(servicepb.NewServiceHandler(
 ))
 ```
 
-Log attributes: procedure, status, request_id, user_id, error (on failure).
+Log attributes: procedure, status, error (on failure). Request fields come from `slogutil.ContextHandler`.
 
 ### connectrpc/requestid
 

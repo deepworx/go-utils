@@ -10,6 +10,7 @@ import (
 	"connectrpc.com/connect"
 
 	"github.com/deepworx/go-utils/pkg/ctxutil"
+	"github.com/deepworx/go-utils/pkg/slogutil"
 )
 
 type mockHandler struct {
@@ -45,7 +46,7 @@ func (h *mockHandler) getRecords() []slog.Record {
 func TestLogRequest_Success(t *testing.T) {
 	mock := &mockHandler{}
 	oldLogger := slog.Default()
-	slog.SetDefault(slog.New(mock))
+	slog.SetDefault(slog.New(slogutil.NewContextHandler(mock)))
 	t.Cleanup(func() { slog.SetDefault(oldLogger) })
 
 	ctx := ctxutil.WithRequestID(context.Background(), "req-123")
@@ -79,12 +80,17 @@ func TestLogRequest_Success(t *testing.T) {
 	if attrs["user_id"] != "user-456" {
 		t.Errorf("user_id = %q, want %q", attrs["user_id"], "user-456")
 	}
+	for _, key := range []string{"request_id", "user_id"} {
+		if n := countAttr(record, key); n != 1 {
+			t.Errorf("%s appears %d times, want 1", key, n)
+		}
+	}
 }
 
 func TestLogRequest_Error(t *testing.T) {
 	mock := &mockHandler{}
 	oldLogger := slog.Default()
-	slog.SetDefault(slog.New(mock))
+	slog.SetDefault(slog.New(slogutil.NewContextHandler(mock)))
 	t.Cleanup(func() { slog.SetDefault(oldLogger) })
 
 	ctx := context.Background()
@@ -117,7 +123,7 @@ func TestLogRequest_Error(t *testing.T) {
 func TestLogRequest_UnknownError(t *testing.T) {
 	mock := &mockHandler{}
 	oldLogger := slog.Default()
-	slog.SetDefault(slog.New(mock))
+	slog.SetDefault(slog.New(slogutil.NewContextHandler(mock)))
 	t.Cleanup(func() { slog.SetDefault(oldLogger) })
 
 	ctx := context.Background()
@@ -139,7 +145,7 @@ func TestLogRequest_UnknownError(t *testing.T) {
 func TestInterceptor_WrapUnary(t *testing.T) {
 	mock := &mockHandler{}
 	oldLogger := slog.Default()
-	slog.SetDefault(slog.New(mock))
+	slog.SetDefault(slog.New(slogutil.NewContextHandler(mock)))
 	t.Cleanup(func() { slog.SetDefault(oldLogger) })
 
 	interceptor := NewInterceptor()
@@ -171,7 +177,7 @@ func TestInterceptor_WrapUnary(t *testing.T) {
 func TestInterceptor_WrapStreamingHandler(t *testing.T) {
 	mock := &mockHandler{}
 	oldLogger := slog.Default()
-	slog.SetDefault(slog.New(mock))
+	slog.SetDefault(slog.New(slogutil.NewContextHandler(mock)))
 	t.Cleanup(func() { slog.SetDefault(oldLogger) })
 
 	interceptor := NewInterceptor()
@@ -251,6 +257,17 @@ func TestGetStatus(t *testing.T) {
 			}
 		})
 	}
+}
+
+func countAttr(r slog.Record, key string) int {
+	n := 0
+	r.Attrs(func(a slog.Attr) bool {
+		if a.Key == key {
+			n++
+		}
+		return true
+	})
+	return n
 }
 
 func extractAttrs(r slog.Record) map[string]string {

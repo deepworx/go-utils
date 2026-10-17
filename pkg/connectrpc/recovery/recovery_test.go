@@ -11,6 +11,7 @@ import (
 	"connectrpc.com/connect"
 
 	"github.com/deepworx/go-utils/pkg/ctxutil"
+	"github.com/deepworx/go-utils/pkg/slogutil"
 )
 
 type mockHandler struct {
@@ -78,7 +79,7 @@ func TestRecoverPanic(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			mock := &mockHandler{}
 			oldLogger := slog.Default()
-			slog.SetDefault(slog.New(mock))
+			slog.SetDefault(slog.New(slogutil.NewContextHandler(mock)))
 			t.Cleanup(func() { slog.SetDefault(oldLogger) })
 
 			ctx := context.Background()
@@ -133,6 +134,9 @@ func TestRecoverPanic(t *testing.T) {
 				if attrs["request_id"] != tt.requestID {
 					t.Errorf("request_id = %q, want %q", attrs["request_id"], tt.requestID)
 				}
+				if n := countAttr(record, "request_id"); n != 1 {
+					t.Errorf("request_id appears %d times, want 1", n)
+				}
 			}
 		})
 	}
@@ -141,7 +145,7 @@ func TestRecoverPanic(t *testing.T) {
 func TestInterceptor_WrapUnary_Panic(t *testing.T) {
 	mock := &mockHandler{}
 	oldLogger := slog.Default()
-	slog.SetDefault(slog.New(mock))
+	slog.SetDefault(slog.New(slogutil.NewContextHandler(mock)))
 	t.Cleanup(func() { slog.SetDefault(oldLogger) })
 
 	interceptor := NewInterceptor()
@@ -178,7 +182,7 @@ func TestInterceptor_WrapUnary_Panic(t *testing.T) {
 func TestInterceptor_WrapUnary_NoPanic(t *testing.T) {
 	mock := &mockHandler{}
 	oldLogger := slog.Default()
-	slog.SetDefault(slog.New(mock))
+	slog.SetDefault(slog.New(slogutil.NewContextHandler(mock)))
 	t.Cleanup(func() { slog.SetDefault(oldLogger) })
 
 	interceptor := NewInterceptor()
@@ -207,7 +211,7 @@ func TestInterceptor_WrapUnary_NoPanic(t *testing.T) {
 func TestInterceptor_WrapStreamingHandler_Panic(t *testing.T) {
 	mock := &mockHandler{}
 	oldLogger := slog.Default()
-	slog.SetDefault(slog.New(mock))
+	slog.SetDefault(slog.New(slogutil.NewContextHandler(mock)))
 	t.Cleanup(func() { slog.SetDefault(oldLogger) })
 
 	interceptor := NewInterceptor()
@@ -259,6 +263,17 @@ func TestInterceptor_WrapStreamingClient_PassThrough(t *testing.T) {
 	if !called {
 		t.Error("expected original function to be called")
 	}
+}
+
+func countAttr(r slog.Record, key string) int {
+	n := 0
+	r.Attrs(func(a slog.Attr) bool {
+		if a.Key == key {
+			n++
+		}
+		return true
+	})
+	return n
 }
 
 func extractAttrs(r slog.Record) map[string]any {
