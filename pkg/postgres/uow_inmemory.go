@@ -8,7 +8,7 @@ import (
 // InMemoryUnitOfWork implements UnitOfWork without a database. Writes
 // registered with Stage inside Execute are applied in order when fn succeeds
 // and dropped when it fails or panics, so map-backed prototypes roll back like
-// real transactions.
+// real transactions. Eager writes undo themselves through OnRollback.
 type InMemoryUnitOfWork struct{}
 
 // NewInMemoryUnitOfWork creates an in-memory UnitOfWork.
@@ -25,9 +25,16 @@ func (u *InMemoryUnitOfWork) Execute(ctx context.Context, fn func(ctx context.Co
 	}
 
 	tx := &memTx{}
+	committed := false
+	defer func() {
+		if !committed {
+			tx.rollback()
+		}
+	}()
 	if err := fn(context.WithValue(ctx, memTxKey{}, tx)); err != nil {
 		return err
 	}
+	committed = true
 	tx.commit()
 	return nil
 }
@@ -44,11 +51,24 @@ func Stage(ctx context.Context, apply func()) {
 	tx.stage(apply)
 }
 
+// OnRollback registers undo for an in-memory write that was applied eagerly,
+// such as a reservation other transactions must see at once. Inside an
+// in-memory transaction undo runs when it fails or panics, in reverse
+// registration order, and is dropped on commit. Outside one, undo never runs.
+func OnRollback(ctx context.Context, undo func()) {
+	tx, ok := ctx.Value(memTxKey{}).(*memTx)
+	if !ok {
+		return
+	}
+	tx.onRollback(undo)
+}
+
 type memTxKey struct{}
 
 type memTx struct {
 	mu     sync.Mutex
 	staged []func()
+	undos  []func()
 }
 
 func (t *memTx) stage(apply func()) {
@@ -57,14 +77,31 @@ func (t *memTx) stage(apply func()) {
 	t.staged = append(t.staged, apply)
 }
 
+func (t *memTx) onRollback(undo func()) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.undos = append(t.undos, undo)
+}
+
 func (t *memTx) commit() {
 	t.mu.Lock()
 	staged := t.staged
-	t.staged = nil
+	t.staged, t.undos = nil, nil
 	t.mu.Unlock()
 
 	for _, apply := range staged {
 		apply()
+	}
+}
+
+func (t *memTx) rollback() {
+	t.mu.Lock()
+	undos := t.undos
+	t.staged, t.undos = nil, nil
+	t.mu.Unlock()
+
+	for i := len(undos) - 1; i >= 0; i-- {
+		undos[i]()
 	}
 }
 
