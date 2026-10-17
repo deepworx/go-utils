@@ -30,7 +30,9 @@ var ErrPanic = errors.New("scheduler: run panicked")
 // Tick runs every registered job that is due at now and waits for those
 // runs to finish. A daily job is due once now has reached local midnight
 // plus NotBefore on now's Business date and that date has no claimed run;
-// earlier dates are never considered. Afterwards the leader reports the
+// earlier dates are never considered. An interval job is due once now has
+// reached its next grid point; it then runs once for the latest grid point,
+// however many were missed. Afterwards the leader reports the
 // last_success gauge. Aborted runs are logged, not returned; Tick returns
 // database and lease errors.
 func (s *Scheduler) Tick(ctx context.Context, now time.Time) error {
@@ -74,9 +76,7 @@ func (s *Scheduler) loop(ctx context.Context, name string, tick func() error) {
 }
 
 func (s *Scheduler) tickJob(ctx context.Context, job Job, now time.Time) error {
-	date := DateOf(now.In(s.location))
-	due := date.midnight(s.location).Add(job.NotBefore)
-	if now.Before(due) {
+	if job.Every == 0 && now.Before(s.dailyDue(job, now)) {
 		return nil
 	}
 
@@ -90,27 +90,34 @@ func (s *Scheduler) tickJob(ctx context.Context, job Job, now time.Time) error {
 	}
 	defer release()
 
-	attempt, claimed, err := s.claim(leaseCtx, claimInput{job: job, date: date, now: now})
+	claim := s.claimDaily
+	if job.Every > 0 {
+		claim = s.claimInterval
+	}
+	run, claimed, err := claim(leaseCtx, job, now)
 	if err != nil || !claimed {
 		return err
 	}
-	return s.execute(leaseCtx, job, Run{Date: date, Due: due, Location: s.location, Attempt: attempt}, now)
+	return s.execute(leaseCtx, job, run, now)
 }
 
-type claimInput struct {
-	job  Job
-	date Date
-	now  time.Time
+// dailyDue returns the instant a daily job becomes due on now's Business
+// date.
+func (s *Scheduler) dailyDue(job Job, now time.Time) time.Time {
+	return DateOf(now.In(s.location)).midnight(s.location).Add(job.NotBefore)
 }
 
-// claim inserts the run row for the date, or takes over an aborted attempt
-// after RetryAfter, or an abandoned one after Timeout plus RetryAfter. It
-// reports false when the date is finished or another attempt is running.
-// The upsert is the fence: at most one caller claims each attempt.
-func (s *Scheduler) claim(ctx context.Context, in claimInput) (attempt int, claimed bool, err error) {
-	retryBefore := in.now.Add(-s.retryAfter)
-	abandonedBefore := retryBefore.Add(-in.job.Timeout)
-	err = s.pool.QueryRow(ctx, `
+// claimDaily inserts the run row for now's Business date, or takes over an
+// aborted attempt after RetryAfter, or an abandoned one after Timeout plus
+// RetryAfter. It reports false when the date is finished or another attempt
+// is running. The upsert is the fence: at most one caller claims each
+// attempt.
+func (s *Scheduler) claimDaily(ctx context.Context, job Job, now time.Time) (Run, bool, error) {
+	date := DateOf(now.In(s.location))
+	retryBefore := now.Add(-s.retryAfter)
+	abandonedBefore := retryBefore.Add(-job.Timeout)
+	var attempt int
+	err := s.pool.QueryRow(ctx, `
 		INSERT INTO `+s.runsTable+` AS r (job, business_date, started_at, attempt)
 		VALUES ($1, $2::date, $3, 1)
 		ON CONFLICT (job, business_date) DO UPDATE
@@ -119,15 +126,15 @@ func (s *Scheduler) claim(ctx context.Context, in claimInput) (attempt int, clai
 		WHERE (r.error IS NOT NULL AND r.finished_at <= $4)
 		   OR (r.finished_at IS NULL AND r.started_at <= $5)
 		RETURNING attempt`,
-		in.job.Name, in.date.String(), in.now, retryBefore, abandonedBefore,
+		job.Name, date.String(), now, retryBefore, abandonedBefore,
 	).Scan(&attempt)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return 0, false, nil
+		return Run{}, false, nil
 	}
 	if err != nil {
-		return 0, false, fmt.Errorf("scheduler: claim %s on %s: %w", in.job.Name, in.date, err)
+		return Run{}, false, fmt.Errorf("scheduler: claim %s on %s: %w", job.Name, date, err)
 	}
-	return attempt, true, nil
+	return Run{Date: date, Due: s.dailyDue(job, now), Location: s.location, Attempt: attempt}, true, nil
 }
 
 func (s *Scheduler) execute(ctx context.Context, job Job, run Run, now time.Time) error {
@@ -159,8 +166,9 @@ func (s *Scheduler) execute(ctx context.Context, job Job, run Run, now time.Time
 	}
 
 	return s.finish(ctx, finishInput{
-		job:        job.Name,
+		job:        job,
 		run:        run,
+		startedAt:  now,
 		finishedAt: now.Add(elapsed),
 		failures:   len(outcome.Failures),
 		err:        runErr,
@@ -209,38 +217,52 @@ func errorType(err error) string {
 }
 
 type finishInput struct {
-	job        string
+	job        Job
 	run        Run
+	startedAt  time.Time
 	finishedAt time.Time
 	failures   int
 	err        error
 }
 
 // finish records the end of the claimed attempt. It runs even when ctx has
-// ended, and is fenced by the attempt number.
+// ended, and is fenced by the attempt.
 func (s *Scheduler) finish(ctx context.Context, in finishInput) error {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), statementTimeout)
 	defer cancel()
-
-	var runErr *string
-	if in.err != nil {
-		msg := in.err.Error()
-		runErr = &msg
+	if in.job.Every > 0 {
+		return s.finishInterval(ctx, in)
 	}
+	return s.finishDaily(ctx, in)
+}
+
+func (s *Scheduler) finishDaily(ctx context.Context, in finishInput) error {
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE `+s.runsTable+`
 		SET finished_at = $3, failures = $4, error = $5
 		WHERE job = $1 AND business_date = $2::date AND attempt = $6 AND finished_at IS NULL`,
-		in.job, in.run.Date.String(), in.finishedAt, in.failures, runErr, in.run.Attempt,
+		in.job.Name, in.run.Date.String(), in.finishedAt, in.failures, errorText(in.err), in.run.Attempt,
 	)
 	if err != nil {
-		return fmt.Errorf("scheduler: finish %s on %s: %w", in.job, in.run.Date, err)
+		return fmt.Errorf("scheduler: finish %s on %s: %w", in.job.Name, in.run.Date, err)
 	}
 	if tag.RowsAffected() == 0 {
-		s.logger.WarnContext(ctx, "scheduler: run was claimed by another attempt",
-			slog.String(telemetry.LogJob, in.job), slog.Int(telemetry.LogAttempt, in.run.Attempt))
+		s.warnSuperseded(ctx, in)
 	}
 	return nil
+}
+
+func errorText(err error) *string {
+	if err == nil {
+		return nil
+	}
+	msg := err.Error()
+	return &msg
+}
+
+func (s *Scheduler) warnSuperseded(ctx context.Context, in finishInput) {
+	s.logger.WarnContext(ctx, "scheduler: run was claimed by another attempt",
+		slog.String(telemetry.LogJob, in.job.Name), slog.Int(telemetry.LogAttempt, in.run.Attempt))
 }
 
 func sleep(ctx context.Context, d time.Duration) bool {
