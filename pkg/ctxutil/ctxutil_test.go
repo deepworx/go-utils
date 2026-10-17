@@ -9,10 +9,10 @@ func TestRequestID(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name    string
-		setup   func() context.Context
-		wantID  string
-		wantOK  bool
+		name   string
+		setup  func() context.Context
+		wantID string
+		wantOK bool
 	}{
 		{
 			name:   "empty context",
