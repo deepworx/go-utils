@@ -39,3 +39,19 @@ CREATE TABLE public.identifier_sequences (
     last_value BIGINT NOT NULL CHECK (last_value > 0),
     PRIMARY KEY (tenant_id, context, name)
 );
+
+-- ---------------------------------------------------------------------------
+-- pkg/scheduler: one row per daily job and Business date. finished_at is set
+-- when an attempt ends; error IS NULL marks a successful run, which is never
+-- run again.
+-- ---------------------------------------------------------------------------
+CREATE TABLE public.scheduler_runs (
+    job           TEXT        NOT NULL,
+    business_date DATE        NOT NULL,
+    started_at    TIMESTAMPTZ NOT NULL,
+    finished_at   TIMESTAMPTZ,
+    attempt       INT         NOT NULL,
+    failures      INT         NOT NULL DEFAULT 0,
+    error         TEXT,
+    PRIMARY KEY (job, business_date)
+);
