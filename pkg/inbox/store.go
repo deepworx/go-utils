@@ -31,12 +31,15 @@ import (
 
 const defaultSchema = "public"
 
+const maxKeyLen = 256
+
 // Message is an incoming external message.
 type Message struct {
 	// Source names the origin of the message, such as one webhook provider.
 	// Required.
 	Source string
-	// Key identifies the message within its Source. Required.
+	// Key identifies the message within its Source. Required, at most 256
+	// bytes.
 	Key string
 	// Type classifies the message for the Handler. Required.
 	Type string
@@ -52,6 +55,8 @@ func (m Message) validate() error {
 		return fmt.Errorf("%w: empty source", ErrInvalidMessage)
 	case m.Key == "":
 		return fmt.Errorf("%w: empty key", ErrInvalidMessage)
+	case len(m.Key) > maxKeyLen:
+		return fmt.Errorf("%w: key longer than %d bytes", ErrInvalidMessage, maxKeyLen)
 	case m.Type == "":
 		return fmt.Errorf("%w: empty type", ErrInvalidMessage)
 	}

@@ -30,6 +30,16 @@ func TestNewStoreRejectsNilPool(t *testing.T) {
 	}
 }
 
+func TestInsertAcceptsKeyOfMaxLen(t *testing.T) {
+	t.Parallel()
+
+	store, _ := newStore(t)
+	msg := inbox.Message{Source: "s", Key: strings.Repeat("k", inbox.MaxKeyLen), Type: "t"}
+	if inserted, err := store.Insert(t.Context(), msg); err != nil || !inserted {
+		t.Fatalf("Insert() = %v, %v, want true, nil", inserted, err)
+	}
+}
+
 func TestInsertRejectsIncompleteMessage(t *testing.T) {
 	t.Parallel()
 
@@ -40,6 +50,7 @@ func TestInsertRejectsIncompleteMessage(t *testing.T) {
 		{name: "empty source", msg: inbox.Message{Key: "k", Type: "t"}},
 		{name: "empty key", msg: inbox.Message{Source: "s", Type: "t"}},
 		{name: "empty type", msg: inbox.Message{Source: "s", Key: "k"}},
+		{name: "key too long", msg: inbox.Message{Source: "s", Key: strings.Repeat("k", inbox.MaxKeyLen+1), Type: "t"}},
 	}
 	store, _ := newStore(t)
 	for _, tt := range tests {
