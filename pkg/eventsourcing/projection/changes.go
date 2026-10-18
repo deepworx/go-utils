@@ -118,7 +118,9 @@ type Subscription struct {
 // It ends when ctx ends or on Close, whichever comes first; C is closed
 // then. On a PgRuntime it listens through the runtime's Listener and fails
 // with consumer.ErrInvalidConfig when there is none; changes sent before
-// the LISTEN took effect are not delivered.
+// the LISTEN took effect are not delivered. A Subscription receives the
+// Changes of every Tenant: filter by Change.Tenant before forwarding one
+// where a Tenant can see it (ADR-0014).
 func Subscribe(ctx context.Context, rt consumer.Runtime) (*Subscription, error) {
 	changes, ok := consumerhook.RuntimeChanges(rt)
 	if !ok {

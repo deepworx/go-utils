@@ -22,7 +22,9 @@
 // consumer.Permanent, a panic or an undecodable event, Parks its Stream.
 // The Reactor holds the event and every later event of that Stream in order
 // while its Cursor moves on for all other Streams. Redrive replays a Parked
-// Stream, Discard skips one held event and Parked lists them.
+// Stream, Discard skips one held event and Parked lists them. These are
+// Operator calls: they take the Tenant as an argument, never from ctx, and
+// do no authorization (ADR-0014).
 //
 // The lease holder redrives Parked Streams automatically on the WithRedrive
 // schedule (default 1m, 5m, 30m, 2h, 12h, each jittered down by up to a

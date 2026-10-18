@@ -45,7 +45,8 @@ type Record struct {
 	DiscardedBy string
 }
 
-// List returns the messages matching f, oldest first.
+// List returns the messages matching f, oldest first, with their Payload.
+// It is an Operator call: it lists every Tenant's messages (ADR-0014).
 func (s *Store) List(ctx context.Context, f Filter) ([]Record, error) {
 	limit := f.Limit
 	if limit <= 0 {
@@ -90,7 +91,8 @@ func scanRecord(row pgx.CollectableRow) (Record, error) {
 // Redrive makes the Parked message id due now with its attempts reset, so
 // its next attempt counts as the first. It wakes the Workers listening for
 // the message's Source. It fails with ErrNotFound for an unknown id and
-// ErrNotParked for a message that is not Parked.
+// ErrNotParked for a message that is not Parked. It is an Operator call:
+// id is not checked against the ctx Tenant (ADR-0014).
 func (s *Store) Redrive(ctx context.Context, id int64) error {
 	var released bool
 	err := s.pool.QueryRow(ctx, `
@@ -123,7 +125,8 @@ func (s *Store) Redrive(ctx context.Context, id int64) error {
 // stays deduplicated and the decision stays traceable. A non-empty reason
 // replaces the message's Error. It fails with ctxutil.ErrNoActor when ctx
 // names no one, ErrNotFound for an unknown id and ErrSettled for a message
-// that is already done, ignored or discarded.
+// that is already done, ignored or discarded. It is an Operator call: id is
+// not checked against the ctx Tenant (ADR-0014).
 func (s *Store) Discard(ctx context.Context, id int64, reason string) error {
 	by, err := ctxutil.ResolveActor(ctx)
 	if err != nil {

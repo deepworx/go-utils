@@ -354,9 +354,16 @@ defer sub.Close()
 for c := range sub.C() {
 	if c.Gap {
 		// changes may have been lost: refetch everything shown
+		continue
+	}
+	if c.Tenant != viewerTenant {
+		continue // every Tenant's changes arrive here
 	}
 }
 ```
+
+A Subscription receives the changes of every Tenant (ADR-0014). Filter by
+`Change.Tenant` before forwarding a change anywhere a Tenant can see it.
 
 Subscribe returns before the LISTEN takes effect, so fetch the current state
 after subscribing, not before.
@@ -745,8 +752,14 @@ ctx, which is recorded. `Status` and the `eventsourcing.reactor.parked.*`
 gauges count Parked Streams, held events and exhausted Streams.
 
 **Inbox.** `inboxStore.List(ctx, inbox.Filter{Status: inbox.StatusParked})`,
-`Redrive(ctx, id)` and `Discard(ctx, inbox.DiscardInput{ID, By, Reason})`.
-Parked messages are never cleaned up.
+`Redrive(ctx, id)` and `Discard(ctx, id, reason)`. Discard needs an Actor in
+ctx, which is recorded. Parked messages are never cleaned up.
+
+**Operator calls are cross-tenant.** The calls above take their tenant from
+their arguments, never from ctx, and do no authorization (ADR-0014).
+`List` returns every Tenant's payloads, `Parked(ctx, "")` lists every Tenant,
+and an unknown inbox ID fails differently from a known one. Expose them only
+to Operators, or guard them in the app before a tenant admin can call them.
 
 **Long transactions delay every Consumer (pg_snapshot_xmin is
 cluster-wide).** A Postgres Consumer reads only events below

@@ -81,19 +81,23 @@ A stateless Consumer that turns events into commands; any state it needs lives i
 _Avoid_: Process manager (reserved for a stateful, per-instance coordinator), policy, saga
 
 **Parked**:
-Held back from processing until a redrive succeeds or an operator discards it. For a Reactor, a Stream is parked: the Reactor holds the failed event and every later event of that Stream while its Cursor moves on for all other Streams. For an Inbox, a single message is parked once its retries are spent. Unlike Stopped, it confines a failure to one Stream or one message.
+Held back from processing until a redrive succeeds or an Operator discards it. For a Reactor, a Stream is parked: the Reactor holds the failed event and every later event of that Stream while its Cursor moves on for all other Streams. For an Inbox, a single message is parked once its retries are spent. Unlike Stopped, it confines a failure to one Stream or one message.
 _Avoid_: Dead-lettered, quarantined
 
 **Redrive**:
-Releasing something Parked for another attempt. A Reactor replays a Parked Stream's held events in order, automatically on a schedule or by an operator, stopping at the first failure and never touching the Cursor; an Inbox message is redriven only by an operator, with its attempts reset.
+Releasing something Parked for another attempt. A Reactor replays a Parked Stream's held events in order, automatically on a schedule or by an Operator, stopping at the first failure and never touching the Cursor; an Inbox message is redriven only by an Operator, with its attempts reset.
 _Avoid_: Retry (the attempts before something is parked)
+
+**Operator**:
+A trusted caller who works across all Tenants to keep Consumers and Inboxes running: listing, Redriving and discarding Parked work, and watching changes. The library does not authorize Operators; an app that exposes operator calls to a tenant admin guards them itself (ADR-0014).
+_Avoid_: Admin (suggests a tenant admin), support user
 
 **Business date**:
 A calendar date in the service's business timezone; a daily scheduled job runs at most once per business date, and missed dates are never run retroactively.
 _Avoid_: Run date, day
 
 **Inbox**:
-A durable, leased work queue for incoming external messages (e.g. webhooks), independent of the event log.
+A durable, leased work queue for incoming external messages (e.g. webhooks), independent of the event log. A message may belong to a Tenant or to none; Operators see the messages of every Tenant.
 _Avoid_: Webhook inbox
 
 **Source**:

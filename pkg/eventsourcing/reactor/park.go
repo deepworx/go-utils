@@ -233,7 +233,8 @@ func (r *Reactor) replayHead(ctx context.Context, replay replayFunc, h claimedHe
 // releases each that succeeds. It stops at the first failure, which it
 // returns together with how many events remain held. It goes on until the
 // hold is empty, including events held while it runs, and never moves the
-// Cursor. It fails with ErrNotParked when s is not Parked.
+// Cursor. It fails with ErrNotParked when s is not Parked. It is an
+// Operator call: s.Tenant is not checked against the ctx Tenant (ADR-0014).
 func (r *Reactor) Redrive(ctx context.Context, s Stream) (RedriveResult, error) {
 	res, failure, err := r.redrive(ctx, redriveInput{stream: s, replay: r.react})
 	if err == nil {
@@ -278,7 +279,8 @@ func (r *Reactor) redrive(ctx context.Context, in redriveInput) (res RedriveResu
 // last held event, s is no longer Parked. It fails with ErrNotParked when
 // s does not hold the event, with ErrRedriving while a Redrive or
 // auto-redrive of s is in progress (whichever event is named), and with
-// eventstore.ErrNoActor when ctx names no one.
+// eventstore.ErrNoActor when ctx names no one. It is an Operator call:
+// s.Tenant is not checked against the ctx Tenant (ADR-0014).
 func (r *Reactor) Discard(ctx context.Context, s Stream, eventID uuid.UUID) error {
 	by, err := ctxutil.ResolveActor(ctx)
 	if err != nil {
@@ -292,7 +294,8 @@ func (r *Reactor) Discard(ctx context.Context, s Stream, eventID uuid.UUID) erro
 
 // Parked lists the held events of tenant, or of every Tenant for "". The
 // events of one Stream are in Stream order, Streams in the order they were
-// Parked.
+// Parked. It is an Operator call: tenant is not checked against the ctx
+// Tenant, and Parked.Cause carries raw error text (ADR-0014).
 func (r *Reactor) Parked(ctx context.Context, tenant string) ([]Parked, error) {
 	p, err := r.parks.list(ctx, tenant)
 	if err != nil {

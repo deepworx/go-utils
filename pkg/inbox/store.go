@@ -11,8 +11,10 @@
 // no ordering guarantee.
 //
 // Operators List messages, Redrive Parked ones and Discard the ones that
-// should not be handled. CleanupJob deletes settled messages after a
-// retention period; Parked messages stay until an operator resolves them.
+// should not be handled. These calls span every Tenant and do no
+// authorization (ADR-0014): expose them only to Operators. CleanupJob
+// deletes settled messages after a retention period; Parked messages stay
+// until an Operator resolves them.
 package inbox
 
 import (
