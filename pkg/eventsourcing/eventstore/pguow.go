@@ -27,6 +27,12 @@ type PgUnitOfWorkConfig struct {
 // before fn runs, so writers to one Stream serialize across connections and
 // processes until commit. Guard, numbering and other postgres.Conn users in
 // fn join the transaction.
+//
+// Command transactions must run at READ COMMITTED, so every read after the
+// lock sees what earlier writers committed; any other isolation level fails
+// with ErrUnsupportedIsolation (ADR-0013). The lock serializes only writers
+// to this Stream: reads of other data are as fresh as READ COMMITTED, no
+// more.
 type PgUnitOfWork struct {
 	uow    *postgres.PgUnitOfWork
 	schema string
@@ -46,18 +52,25 @@ func NewPgUnitOfWork(cfg PgUnitOfWorkConfig) (*PgUnitOfWork, error) {
 	return &PgUnitOfWork{uow: cfg.UnitOfWork, schema: schema}, nil
 }
 
+// readCommitted is the only transaction_isolation a Command transaction
+// accepts.
+const readCommitted = "read committed"
+
 // holdStream takes the stream lock $1 and records the held Stream $2 in a
 // transaction-local setting, in one round trip. It returns the Stream the
-// database transaction already held, or $2 when it held none.
+// database transaction already held, or $2 when it held none, and the
+// transaction's isolation level.
 const holdStream = `SELECT coalesce(nullif(current_setting('eventsourcing.command_stream', true), ''),
-		set_config('eventsourcing.command_stream', $2, true))
+		set_config('eventsourcing.command_stream', $2, true)),
+		current_setting('transaction_isolation')
 	FROM pg_advisory_xact_lock($1)`
 
 // Execute opens a Command transaction for stream, waiting for its stream
 // lock until ctx ends. An open Postgres transaction in ctx is joined, and
 // the lock is then held until that transaction ends. One database
 // transaction holds one Stream: joining one that already holds another
-// Stream fails with ErrStreamMismatch.
+// Stream fails with ErrStreamMismatch. A transaction that does not run at
+// READ COMMITTED fails with ErrUnsupportedIsolation once it holds the lock.
 func (u *PgUnitOfWork) Execute(ctx context.Context, stream uuid.UUID, fn func(ctx context.Context) error) error {
 	ctx, tx, err := openCommandTx(ctx, stream)
 	if err != nil {
@@ -65,13 +78,16 @@ func (u *PgUnitOfWork) Execute(ctx context.Context, stream uuid.UUID, fn func(ct
 	}
 	ref := streamRef{schema: u.schema, tenant: tx.tenant, stream: stream}
 	return u.uow.Execute(ctx, func(ctx context.Context) error {
-		var held string
-		err := postgres.TxFromContext(ctx).QueryRow(ctx, holdStream, ref.lockKey(), ref.String()).Scan(&held)
+		var held, isolation string
+		err := postgres.TxFromContext(ctx).QueryRow(ctx, holdStream, ref.lockKey(), ref.String()).Scan(&held, &isolation)
 		if err != nil {
 			return fmt.Errorf("lock stream %s: %w", stream, err)
 		}
 		if held != ref.String() {
 			return fmt.Errorf("database transaction holds %s, got %s: %w", held, ref, ErrStreamMismatch)
+		}
+		if isolation != readCommitted {
+			return fmt.Errorf("command transaction runs %s, need %s: %w", isolation, readCommitted, ErrUnsupportedIsolation)
 		}
 		return fn(ctx)
 	})

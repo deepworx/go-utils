@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -93,6 +94,60 @@ func TestPgUnitOfWorkLocksPerTenantAndStream(t *testing.T) {
 		if !errors.Is(err, tt.want) {
 			t.Fatalf("%s: err = %v, want %v", tt.name, err, tt.want)
 		}
+	}
+}
+
+func TestPgUnitOfWorkRequiresReadCommitted(t *testing.T) {
+	t.Parallel()
+	pool := pgtest.New(t)
+	defaultUoW := newPgUnitOfWork(t, pool, "")
+	executeAt := func(level pgx.TxIsoLevel) func(context.Context, func(context.Context) error) error {
+		return postgres.NewUnitOfWork(pool, postgres.TxOptions(pgx.TxOptions{IsoLevel: level})).Execute
+	}
+	opened := func(level pgx.TxIsoLevel) func(context.Context, uuid.UUID, func(context.Context) error) error {
+		u, err := eventstore.NewPgUnitOfWork(eventstore.PgUnitOfWorkConfig{
+			UnitOfWork: postgres.NewUnitOfWork(pool, postgres.TxOptions(pgx.TxOptions{IsoLevel: level})),
+		})
+		if err != nil {
+			t.Fatalf("NewPgUnitOfWork: %v", err)
+		}
+		return u.Execute
+	}
+	joined := func(level pgx.TxIsoLevel) func(context.Context, uuid.UUID, func(context.Context) error) error {
+		return func(ctx context.Context, stream uuid.UUID, fn func(context.Context) error) error {
+			return executeAt(level)(ctx, func(ctx context.Context) error {
+				return defaultUoW.Execute(ctx, stream, fn)
+			})
+		}
+	}
+
+	tests := []struct {
+		name    string
+		execute func(context.Context, uuid.UUID, func(context.Context) error) error
+		want    error
+	}{
+		{"opened read committed runs", opened(pgx.ReadCommitted), nil},
+		{"opened default runs", defaultUoW.Execute, nil},
+		{"opened repeatable read fails", opened(pgx.RepeatableRead), eventstore.ErrUnsupportedIsolation},
+		{"opened serializable fails", opened(pgx.Serializable), eventstore.ErrUnsupportedIsolation},
+		{"joined read committed runs", joined(pgx.ReadCommitted), nil},
+		{"joined repeatable read fails", joined(pgx.RepeatableRead), eventstore.ErrUnsupportedIsolation},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ran := false
+			err := tt.execute(boundedCtx(t, userCtx("t1")), uuid.New(), func(context.Context) error {
+				ran = true
+				return nil
+			})
+			if !errors.Is(err, tt.want) {
+				t.Fatalf("err = %v, want %v", err, tt.want)
+			}
+			if wantRan := tt.want == nil; ran != wantRan {
+				t.Fatalf("fn ran = %v, want %v", ran, wantRan)
+			}
+		})
 	}
 }
 

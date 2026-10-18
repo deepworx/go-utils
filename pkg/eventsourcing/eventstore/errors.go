@@ -36,6 +36,9 @@ var (
 	// ErrNestedUnitOfWork reports UnitOfWork.Execute inside an open Command
 	// transaction. Use Within to join it.
 	ErrNestedUnitOfWork = errors.New("eventstore: nested command transaction")
+	// ErrUnsupportedIsolation reports a Postgres Command transaction, opened
+	// or joined, that does not run at READ COMMITTED (ADR-0013).
+	ErrUnsupportedIsolation = errors.New("eventstore: command transaction is not read committed")
 	// ErrNoTenant reports a context without a Tenant (ctxutil.TenantID).
 	ErrNoTenant = errors.New("eventstore: no tenant in context")
 	// ErrNoActor reports an append whose context has neither an Actor
