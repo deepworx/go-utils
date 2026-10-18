@@ -1,10 +1,12 @@
 package inbox_test
 
 import (
+	"context"
 	"errors"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/deepworx/go-utils/internal/pgtest"
 	"github.com/deepworx/go-utils/pkg/inbox"
@@ -62,6 +64,79 @@ func TestInsertRejectsIncompleteMessage(t *testing.T) {
 			}
 			if inserted {
 				t.Error("Insert() inserted = true, want false")
+			}
+		})
+	}
+}
+
+func TestInsertDeduplicatesPerSourceTenantAndKey(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		first        inbox.Message
+		second       inbox.Message
+		cleanup      bool
+		wantInserted bool
+	}{
+		{
+			name:         "same key in another tenant",
+			first:        inbox.Message{Source: "src", Key: "k", Type: "t", Tenant: "a"},
+			second:       inbox.Message{Source: "src", Key: "k", Type: "t", Tenant: "b"},
+			wantInserted: true,
+		},
+		{
+			name:   "same key in the same tenant",
+			first:  inbox.Message{Source: "src", Key: "k", Type: "t", Tenant: "a"},
+			second: inbox.Message{Source: "src", Key: "k", Type: "t", Tenant: "a"},
+		},
+		{
+			name:   "same key without tenant",
+			first:  inbox.Message{Source: "src", Key: "k", Type: "t"},
+			second: inbox.Message{Source: "src", Key: "k", Type: "t"},
+		},
+		{
+			name:         "same key with and without tenant",
+			first:        inbox.Message{Source: "src", Key: "k", Type: "t"},
+			second:       inbox.Message{Source: "src", Key: "k", Type: "t", Tenant: "a"},
+			wantInserted: true,
+		},
+		{
+			name:         "same key in another source",
+			first:        inbox.Message{Source: "src", Key: "k", Type: "t", Tenant: "a"},
+			second:       inbox.Message{Source: "other", Key: "k", Type: "t", Tenant: "a"},
+			wantInserted: true,
+		},
+		{
+			name:         "same key after cleanup",
+			first:        inbox.Message{Source: "src", Key: "k", Type: "t", Tenant: "a"},
+			second:       inbox.Message{Source: "src", Key: "k", Type: "t", Tenant: "a"},
+			cleanup:      true,
+			wantInserted: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			store, _ := newStore(t)
+			mustInsert(t, store, tt.first)
+			if tt.cleanup {
+				drain(t, newWorker(t, store, inbox.Config{
+					Source: tt.first.Source,
+					Handle: func(context.Context, inbox.Delivery) error { return nil },
+				}))
+				if _, err := store.Cleanup(t.Context(), time.Now().Add(time.Hour)); err != nil {
+					t.Fatalf("Cleanup() error = %v", err)
+				}
+			}
+
+			inserted, err := store.Insert(t.Context(), tt.second)
+			if err != nil {
+				t.Fatalf("Insert() error = %v", err)
+			}
+			if inserted != tt.wantInserted {
+				t.Errorf("Insert() inserted = %v, want %v", inserted, tt.wantInserted)
 			}
 		})
 	}

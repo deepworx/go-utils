@@ -53,7 +53,7 @@ func (s *Store) List(ctx context.Context, f Filter) ([]Record, error) {
 		limit = DefaultListLimit
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, source, key, type, COALESCE(tenant_id, ''), payload, status, attempts,
+		SELECT id, source, key, type, tenant_id, payload, status, attempts,
 		       COALESCE(error, ''), received_at, next_attempt_at, settled_at,
 		       discarded_at, COALESCE(discarded_by, '')
 		FROM `+s.table+`

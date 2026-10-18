@@ -26,7 +26,7 @@ func TestHandlerOutcomeSetsStatus(t *testing.T) {
 		{name: "nil is done", result: func() error { return nil }, wantStatus: "done"},
 		{name: "Ignore is ignored", result: func() error { return inbox.Ignore("unknown event") }, wantStatus: "ignored", wantError: "unknown event"},
 		{name: "wrapped Ignore is ignored", result: func() error { return fmt.Errorf("check: %w", inbox.Ignore("stale")) }, wantStatus: "ignored", wantError: "stale"},
-		{name: "Permanent is parked", result: func() error { return inbox.Permanent(errors.New("bad signature")) }, wantStatus: "parked", wantError: "bad signature"},
+		{name: "Permanent is parked", result: func() error { return inbox.Permanent(errors.New("unknown account")) }, wantStatus: "parked", wantError: "unknown account"},
 		{name: "error is retried", result: func() error { return errors.New("provider down") }, wantStatus: "pending", wantError: "provider down", wantRedelivered: true},
 		{name: "panic is retried", result: func() error { panic("boom") }, wantStatus: "pending", wantError: "inbox: handler panic: boom", wantRedelivered: true},
 	}

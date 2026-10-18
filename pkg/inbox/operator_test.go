@@ -129,7 +129,7 @@ func TestDiscardKeepsRowWithAuditFields(t *testing.T) {
 		wantError string
 	}{
 		{name: "parked with reason", permanent: true, reason: "replayed by hand", wantError: "replayed by hand"},
-		{name: "parked without reason keeps last error", permanent: true, wantError: "bad signature"},
+		{name: "parked without reason keeps last error", permanent: true, wantError: "unknown account"},
 		{name: "pending", reason: "obsolete", wantError: "obsolete"},
 	}
 	for _, tt := range tests {
@@ -143,7 +143,7 @@ func TestDiscardKeepsRowWithAuditFields(t *testing.T) {
 			if tt.permanent {
 				drain(t, newWorker(t, store, inbox.Config{
 					Source: "src",
-					Handle: func(context.Context, inbox.Delivery) error { return inbox.Permanent(errors.New("bad signature")) },
+					Handle: func(context.Context, inbox.Delivery) error { return inbox.Permanent(errors.New("unknown account")) },
 				}))
 			}
 			id := mustGet(t, store, "src", "k1").ID
@@ -237,7 +237,7 @@ func settleOneOfEach(t *testing.T, store *inbox.Store, clk *clock) time.Time {
 			case "ignored-old":
 				return inbox.Ignore("unknown type")
 			case "parked-old":
-				return inbox.Permanent(errors.New("bad signature"))
+				return inbox.Permanent(errors.New("unknown account"))
 			case "pending-old":
 				return errors.New("provider down")
 			}

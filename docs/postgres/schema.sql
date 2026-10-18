@@ -286,14 +286,15 @@ CREATE TABLE public.scheduler_intervals (
 
 -- ---------------------------------------------------------------------------
 -- pkg/inbox: deduplicated work queue of incoming external messages, one
--- row per (source, key). Parked rows are kept until an operator acts.
+-- row per (source, tenant_id, key). Parked rows are kept until an operator
+-- acts.
 -- ---------------------------------------------------------------------------
 CREATE TABLE public.inbox_messages (
     id               BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     source           TEXT        NOT NULL,
     key              TEXT        NOT NULL,
     type             TEXT        NOT NULL,
-    tenant_id        TEXT        NULL,
+    tenant_id        TEXT        NOT NULL DEFAULT '',
     payload          BYTEA       NOT NULL,
     status           TEXT        NOT NULL DEFAULT 'pending'
         CHECK (status IN ('pending', 'done', 'ignored', 'parked', 'discarded')),
@@ -307,7 +308,9 @@ CREATE TABLE public.inbox_messages (
     trace_context    TEXT        NULL,
     discarded_at     TIMESTAMPTZ NULL,
     discarded_by     TEXT        NULL,
-    CONSTRAINT inbox_messages_source_key_key UNIQUE (source, key)
+    -- Required under this exact name: Insert deduplicates on it. An empty
+    -- tenant_id is a message without a Tenant (ADR-0003, ADR-0015).
+    CONSTRAINT inbox_messages_source_tenant_key_key UNIQUE (source, tenant_id, key)
 );
 
 -- Claim scan of a Worker: due pending rows of one Source.

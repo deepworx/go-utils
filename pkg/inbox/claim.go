@@ -62,7 +62,7 @@ func (s *Store) claim(ctx context.Context, in claimInput) ([]claimed, error) {
 		    next_attempt_at = $4
 		FROM due
 		WHERE m.id = due.id
-		RETURNING m.id, m.key, m.type, COALESCE(m.tenant_id, ''), m.payload,
+		RETURNING m.id, m.key, m.type, m.tenant_id, m.payload,
 		          m.attempts, m.claim_generation, m.received_at, COALESCE(m.trace_context, '')`,
 		in.Source, now, in.Limit, now.Add(in.Lease),
 	)

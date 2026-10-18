@@ -47,7 +47,7 @@ func mustInsert(t *testing.T, store *inbox.Store, m inbox.Message) {
 	t.Helper()
 	inserted, err := store.Insert(t.Context(), m)
 	if err != nil || !inserted {
-		t.Fatalf("Insert(%s/%s) = %v, %v; want true, nil", m.Source, m.Key, inserted, err)
+		t.Fatalf("Insert(%s/%s, tenant %q) = %v, %v; want true, nil", m.Source, m.Key, m.Tenant, inserted, err)
 	}
 }
 

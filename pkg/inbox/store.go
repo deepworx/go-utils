@@ -3,7 +3,8 @@
 // event log.
 //
 // A Store inserts Messages inside the caller's transaction, deduplicated by
-// (Source, Key). A Worker per Source claims due messages, runs its Handler
+// (Source, Tenant, Key). Authenticate a message before inserting it: a
+// forged message with a real Key would drop the real delivery (ADR-0015). A Worker per Source claims due messages, runs its Handler
 // and settles each message as done, ignored, Parked or due for a retry.
 // Every pod runs every Source's Worker; rows are claimed with
 // FOR UPDATE SKIP LOCKED and fenced by a claim generation, so a Worker whose
@@ -40,8 +41,8 @@ type Message struct {
 	// Source names the origin of the message, such as one webhook provider.
 	// Required.
 	Source string
-	// Key identifies the message within its Source. Required, at most 256
-	// bytes.
+	// Key identifies the message within its Source and Tenant. Required, at
+	// most 256 bytes.
 	Key string
 	// Type classifies the message for the Handler. Required.
 	Type string
@@ -117,7 +118,9 @@ func NewStore(pool *pgxpool.Pool, cfg StoreConfig, opts ...StoreOption) (*Store,
 
 // Insert stores m as a pending message, inside the transaction carried by
 // ctx when there is one. It reports false when a message with the same
-// Source and Key already exists, whatever its status. It fails with
+// Source, Tenant and Key already exists, whatever its status; an empty
+// Tenant only matches an empty Tenant. Authenticate m before calling Insert
+// and reject it without inserting when that fails (ADR-0015). It fails with
 // ErrInvalidMessage when Source, Key or Type is empty. The current span's
 // trace context is stored so the handling span can link to it.
 func (s *Store) Insert(ctx context.Context, m Message) (inserted bool, err error) {
@@ -132,8 +135,8 @@ func (s *Store) Insert(ctx context.Context, m Message) (inserted bool, err error
 	var id int64
 	err = postgres.Conn(ctx, s.pool).QueryRow(ctx, `
 		INSERT INTO `+s.table+` (source, key, type, tenant_id, payload, next_attempt_at, received_at, trace_context)
-		VALUES ($1, $2, $3, NULLIF($4, ''), $5, $6, $6, NULLIF($7, ''))
-		ON CONFLICT (source, key) DO NOTHING
+		VALUES ($1, $2, $3, $4, $5, $6, $6, NULLIF($7, ''))
+		ON CONFLICT (source, tenant_id, key) DO NOTHING
 		RETURNING id`,
 		m.Source, m.Key, m.Type, m.Tenant, payload, now, traceParent(ctx),
 	).Scan(&id)
@@ -141,7 +144,7 @@ func (s *Store) Insert(ctx context.Context, m Message) (inserted bool, err error
 		return false, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("inbox: insert %s/%s: %w", m.Source, m.Key, err)
+		return false, fmt.Errorf("inbox: insert %s/%s (tenant %q): %w", m.Source, m.Key, m.Tenant, err)
 	}
 	return true, nil
 }
