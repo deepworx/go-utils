@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/deepworx/go-utils/pkg/ctxutil"
 )
 
 // DefaultListLimit is the number of messages List returns when
@@ -116,25 +118,16 @@ func (s *Store) Redrive(ctx context.Context, id int64) error {
 	return nil
 }
 
-// DiscardInput identifies the message to discard and records who discarded
-// it and why.
-type DiscardInput struct {
-	// ID is the message's row ID.
-	ID int64
-	// By names the operator, for the audit trail. Required.
-	By string
-	// Reason replaces the message's Error when set.
-	Reason string
-}
-
-// Discard settles the pending or Parked message in.ID as discarded. The row
-// is kept with the discard time and in.By, so its key stays deduplicated
-// and the decision stays traceable. It fails with ErrInvalidDiscard for an
-// empty in.By, ErrNotFound for an unknown ID and ErrSettled for a message
+// Discard settles the pending or Parked message id as discarded. The row is
+// kept with the discard time and the ctxutil.ResolveActor of ctx, so its key
+// stays deduplicated and the decision stays traceable. A non-empty reason
+// replaces the message's Error. It fails with ctxutil.ErrNoActor when ctx
+// names no one, ErrNotFound for an unknown id and ErrSettled for a message
 // that is already done, ignored or discarded.
-func (s *Store) Discard(ctx context.Context, in DiscardInput) error {
-	if in.By == "" {
-		return fmt.Errorf("%w: empty by", ErrInvalidDiscard)
+func (s *Store) Discard(ctx context.Context, id int64, reason string) error {
+	by, err := ctxutil.ResolveActor(ctx)
+	if err != nil {
+		return fmt.Errorf("inbox: discard message %d: %w", id, err)
 	}
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE `+s.table+`
@@ -145,13 +138,13 @@ func (s *Store) Discard(ctx context.Context, in DiscardInput) error {
 		    discarded_by = $3,
 		    error = COALESCE(NULLIF($4, ''), error)
 		WHERE id = $1 AND status IN ('pending', 'parked')`,
-		in.ID, s.now(), in.By, in.Reason,
+		id, s.now(), by, reason,
 	)
 	if err != nil {
-		return fmt.Errorf("inbox: discard message %d: %w", in.ID, err)
+		return fmt.Errorf("inbox: discard message %d: %w", id, err)
 	}
 	if tag.RowsAffected() == 0 {
-		return s.wrongStatus(ctx, in.ID, ErrSettled)
+		return s.wrongStatus(ctx, id, ErrSettled)
 	}
 	return nil
 }

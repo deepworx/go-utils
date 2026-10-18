@@ -274,21 +274,17 @@ func (r *Reactor) redrive(ctx context.Context, in redriveInput) (res RedriveResu
 }
 
 // Discard releases one held event of s without reacting to it. The event
-// stays recorded as discarded, by the Actor or user in ctx. When it was the
+// stays recorded as discarded, by ctxutil.ResolveActor. When it was the
 // last held event, s is no longer Parked. It fails with ErrNotParked when
 // s does not hold the event, with ErrRedriving while a Redrive or
 // auto-redrive of s is in progress (whichever event is named), and with
 // eventstore.ErrNoActor when ctx names no one.
 func (r *Reactor) Discard(ctx context.Context, s Stream, eventID uuid.UUID) error {
-	by, ok := ctxutil.Actor(ctx)
-	if !ok {
-		by, _ = ctxutil.UserID(ctx)
-	}
-	if by == "" {
-		return fmt.Errorf("discard %s: %w", eventID, eventstore.ErrNoActor)
-	}
-	err := r.parks.discard(ctx, discardInput{stream: s, eventID: eventID, by: by, at: r.now()})
+	by, err := ctxutil.ResolveActor(ctx)
 	if err != nil {
+		return fmt.Errorf("discard %s: %w", eventID, err)
+	}
+	if err := r.parks.discard(ctx, discardInput{stream: s, eventID: eventID, by: by, at: r.now()}); err != nil {
 		return fmt.Errorf("discard %s of %s/%s: %w", eventID, s.Tenant, s.ID, err)
 	}
 	return nil

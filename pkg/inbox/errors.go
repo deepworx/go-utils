@@ -26,8 +26,4 @@ var (
 	// ErrSettled is returned by Store.Discard for a message that is already
 	// done, ignored or discarded.
 	ErrSettled = errors.New("inbox: message already settled")
-
-	// ErrInvalidDiscard is returned by Store.Discard for a DiscardInput
-	// without By.
-	ErrInvalidDiscard = errors.New("inbox: invalid discard")
 )

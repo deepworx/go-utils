@@ -405,6 +405,10 @@ func (s suite) discard(t *testing.T) {
 	if err := r.Discard(context.Background(), streamOf("t1", held), failed); !errors.Is(err, eventstore.ErrNoActor) {
 		t.Errorf("Discard without actor = %v, want ErrNoActor", err)
 	}
+	impostor := ctxutil.WithClaims(context.Background(), ctxutil.Claims{UserID: "system:reactor:discard"})
+	if err := r.Discard(impostor, streamOf("t1", held), failed); !errors.Is(err, eventstore.ErrNoActor) {
+		t.Errorf("Discard by a user with the reserved prefix = %v, want ErrNoActor", err)
+	}
 	if err := r.Discard(ops, streamOf("t1", held), uuid.Must(uuid.NewV7())); !errors.Is(err, reactor.ErrNotParked) {
 		t.Errorf("Discard of an unknown event = %v, want ErrNotParked", err)
 	}

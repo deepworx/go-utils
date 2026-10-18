@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/deepworx/go-utils/pkg/ctxutil"
 	"github.com/deepworx/go-utils/pkg/inbox"
 )
 
@@ -148,7 +149,7 @@ func TestDiscardKeepsRowWithAuditFields(t *testing.T) {
 			id := mustGet(t, store, "src", "k1").ID
 
 			clk.Advance(time.Hour)
-			if err := store.Discard(t.Context(), inbox.DiscardInput{ID: id, By: "alice", Reason: tt.reason}); err != nil {
+			if err := store.Discard(userCtx(t, "alice"), id, tt.reason); err != nil {
 				t.Fatalf("Discard() error = %v", err)
 			}
 
@@ -178,17 +179,19 @@ func TestDiscardRejects(t *testing.T) {
 
 	tests := []struct {
 		name    string
-		in      inbox.DiscardInput
+		user    string
+		id      int64
 		wantErr error
 	}{
-		{name: "settled message", in: inbox.DiscardInput{ID: done.ID, By: "alice"}, wantErr: inbox.ErrSettled},
-		{name: "unknown ID", in: inbox.DiscardInput{ID: pending.ID + 1000, By: "alice"}, wantErr: inbox.ErrNotFound},
-		{name: "empty By", in: inbox.DiscardInput{ID: pending.ID}, wantErr: inbox.ErrInvalidDiscard},
+		{name: "settled message", user: "alice", id: done.ID, wantErr: inbox.ErrSettled},
+		{name: "unknown ID", user: "alice", id: pending.ID + 1000, wantErr: inbox.ErrNotFound},
+		{name: "no actor", id: pending.ID, wantErr: ctxutil.ErrNoActor},
+		{name: "reserved user prefix", user: "system:inbox:src", id: pending.ID, wantErr: ctxutil.ErrNoActor},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			if err := store.Discard(t.Context(), tt.in); !errors.Is(err, tt.wantErr) {
+			if err := store.Discard(userCtx(t, tt.user), tt.id, ""); !errors.Is(err, tt.wantErr) {
 				t.Errorf("Discard() error = %v, want %v", err, tt.wantErr)
 			}
 		})
@@ -223,7 +226,7 @@ func settleOneOfEach(t *testing.T, store *inbox.Store, clk *clock) time.Time {
 	for _, key := range []string{"done-old", "ignored-old", "parked-old", "discarded-old", "pending-old"} {
 		mustInsert(t, store, inbox.Message{Source: "src", Key: key, Type: "t"})
 	}
-	if err := store.Discard(t.Context(), inbox.DiscardInput{ID: mustGet(t, store, "src", "discarded-old").ID, By: "alice"}); err != nil {
+	if err := store.Discard(userCtx(t, "alice"), mustGet(t, store, "src", "discarded-old").ID, ""); err != nil {
 		t.Fatalf("Discard() error = %v", err)
 	}
 	w := newWorker(t, store, inbox.Config{
@@ -265,4 +268,14 @@ func recordKeys(rs []inbox.Record) []string {
 		keys = append(keys, r.Key)
 	}
 	return keys
+}
+
+// userCtx returns the test context with user as Claims.UserID; an empty
+// user leaves the context without an actor.
+func userCtx(t *testing.T, user string) context.Context {
+	t.Helper()
+	if user == "" {
+		return t.Context()
+	}
+	return ctxutil.WithClaims(t.Context(), ctxutil.Claims{UserID: user})
 }
