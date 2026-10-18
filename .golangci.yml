@@ -1,0 +1,68 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - copyloopvar
+    - errorlint
+    - misspell
+    - noctx
+    - nolintlint
+    - rowserrcheck
+    - sqlclosecheck
+    - unconvert
+    - usestdlibvars
+    - depguard
+  settings:
+    depguard:
+      rules:
+        aggregate-pure:
+          list-mode: strict
+          files:
+            - "**/pkg/eventsourcing/aggregate/**"
+            - "**/internal/aggregateaccess/hook/**"
+          allow:
+            - $gostd
+            - github.com/google/uuid
+            - github.com/deepworx/go-utils/pkg/eventsourcing/aggregate
+            - github.com/deepworx/go-utils/internal/aggregateaccess
+        quickstart-domain:
+          list-mode: strict
+          files:
+            - "**/internal/quickstart/todo/**"
+            - "!$test"
+          allow:
+            - $gostd
+            - github.com/google/uuid
+            - github.com/deepworx/go-utils/pkg/eventsourcing/aggregate
+        aggregatetest-no-testing:
+          list-mode: lax
+          files:
+            - "**/pkg/eventsourcing/aggregate/aggregatetest/**"
+            - "!$test"
+          deny:
+            - pkg: testing
+              desc: aggregatetest leaves assertions to the caller
+        aggregate-access:
+          list-mode: lax
+          files:
+            - $all
+            - "!**/pkg/eventsourcing/aggregate/**"
+            - "!**/pkg/eventsourcing/eventstore/**"
+            - "!**/internal/aggregateaccess/**"
+          deny:
+            - pkg: github.com/deepworx/go-utils/internal/aggregateaccess
+              desc: only eventstore and aggregatetest may reach Aggregate internals
+  exclusions:
+    generated: lax
+    presets:
+      - std-error-handling
+
+formatters:
+  enable:
+    - gofmt
+    - goimports

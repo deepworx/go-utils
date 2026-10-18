@@ -14,14 +14,14 @@ go get github.com/deepworx/go-utils
 
 | Package | Import | Description |
 |---------|--------|-------------|
-| ctxutil | `pkg/ctxutil` | Context helpers (request ID, user claims) |
+| ctxutil | `pkg/ctxutil` | Context helpers (request ID, claims, tenant, actor, correlation, causation) |
 | shutdown | `pkg/shutdown` | Graceful shutdown orchestration |
 | otel | `pkg/otel` | OpenTelemetry initialization |
 | tracing | `pkg/tracing` | Manual span creation helpers |
 | postgres | `pkg/postgres` | Database pool, transactions, and UnitOfWork |
 | nats | `pkg/nats` | NATS/JetStream connection with tracing and metrics |
 | grpchealth | `pkg/grpchealth` | gRPC health check aggregator |
-| slogutil | `pkg/slogutil` | Global slog logger setup |
+| slogutil | `pkg/slogutil` | Global slog logger setup and ctx-correlated logs |
 | koanfutil | `pkg/koanfutil` | Koanf configuration helpers |
 | jwtauth | `pkg/connectrpc/jwtauth` | JWT authentication interceptor |
 | recovery | `pkg/connectrpc/recovery` | Panic recovery interceptor |
@@ -32,6 +32,8 @@ go get github.com/deepworx/go-utils
 | interceptor | `pkg/connectrpc/interceptor` | Default interceptor chain builder |
 | otelconnect | `connectrpc.com/otelconnect` | OpenTelemetry tracing/metrics (external) |
 | validate | `connectrpc.com/validate` | Request validation with protovalidate (external) |
+
+Event sourcing on Postgres (`pkg/eventsourcing/...`, `pkg/inbox`, `pkg/scheduler`): start with the [quickstart](docs/eventsourcing/quickstart.md).
 
 ## Documentation
 
@@ -45,6 +47,17 @@ ctx = ctxutil.WithClaims(ctx, ctxutil.Claims{UserID: "user-456", TenantID: "tena
 
 id, ok := ctxutil.RequestID(ctx)
 userID, ok := ctxutil.UserID(ctx)
+```
+
+Event metadata (empty strings and `uuid.Nil` count as absent):
+
+```go
+ctx = ctxutil.WithTenantID(ctx, "tenant-789")      // takes precedence over Claims.TenantID
+ctx = ctxutil.WithActor(ctx, "system:scheduler:daily-close")
+ctx = ctxutil.WithCorrelationID(ctx, "corr-1")
+ctx = ctxutil.WithCausationID(ctx, eventID)        // uuid.UUID of the causing event
+
+tenant, ok := ctxutil.TenantID(ctx) // explicit value, then Claims.TenantID
 ```
 
 ### shutdown
@@ -78,6 +91,10 @@ otel.Setup(ctx, otel.Config{ServiceName: "my-service", ServiceVersion: "1.0.0"})
 
 Env vars: `OTEL_TRACES_EXPORTER`, `OTEL_METRICS_EXPORTER`, `OTEL_LOGS_EXPORTER` (`otlp|console|none`)
 
+- Histograms are exported as base-2 exponential (native) histograms. Set `Config.Histograms` to `otel.HistogramsExplicit` (`histograms: explicit`) for explicit buckets.
+- `service.instance.id` is a random UUID per process; override it via `OTEL_RESOURCE_ATTRIBUTES=service.instance.id=...`.
+- `Setup` wraps the `slog.Default()` handler in `slogutil.ContextHandler`, so `slog.InfoContext` etc. carry the ctx correlation fields.
+
 ### tracing
 
 Span wrapper with automatic error recording. Works without TracerProvider (no-op).
@@ -102,14 +119,19 @@ pool, _ := postgres.NewPool(ctx, postgres.Config{DSN: "postgres://localhost/db"}
 // Health check for grpchealth aggregator
 checker := postgres.NewHealthChecker(pool)
 
-// UnitOfWork for testable transaction management
-uow := postgres.NewUnitOfWork(pool)
-uow.Execute(ctx, func(ctx context.Context, tx postgres.Transaction) error {
-    return repo.Save(ctx, tx.Tx(), data)
+// UnitOfWork keeps the transaction in ctx; nested Execute calls join it.
+uow := postgres.NewUnitOfWork(pool, postgres.SetLocalTenant())
+uow.Execute(ctx, func(ctx context.Context) error {
+    // Conn returns the open transaction, or the pool outside one (sqlc DBTX).
+    return db.New(postgres.Conn(ctx, pool)).SaveOrder(ctx, params)
 })
 
-// For testing: InMemoryUnitOfWork (tx.Tx() returns nil)
+// In-memory prototypes: Stage buffers writes until the transaction commits.
 memUoW := postgres.NewInMemoryUnitOfWork()
+memUoW.Execute(ctx, func(ctx context.Context) error {
+    postgres.Stage(ctx, func() { orders[id] = order })
+    return nil
+})
 ```
 
 ### nats
@@ -184,6 +206,11 @@ slogutil.Setup(slogutil.Config{Level: "debug", Format: "json"})
 slogutil.Setup(slogutil.DefaultConfig())
 ```
 
+`Setup` wraps the handler in `slogutil.ContextHandler`, which adds `request_id`,
+`tenant_id`, `user_id`, `correlation_id`, `trace_id` and `span_id` from the ctx
+to every record logged with a `*Context` method. Wrap a custom handler with
+`slogutil.NewContextHandler(h)`.
+
 ### koanfutil
 
 Helpers for [koanf](https://github.com/knadh/koanf) configuration loading.
@@ -238,7 +265,7 @@ mux.Handle(servicepb.NewServiceHandler(
 ))
 ```
 
-Logs include: procedure, panic value, stack trace, request_id (if present).
+Logs include: procedure, panic value, stack trace. Request fields come from `slogutil.ContextHandler`.
 
 ### connectrpc/logging
 
@@ -251,7 +278,7 @@ mux.Handle(servicepb.NewServiceHandler(
 ))
 ```
 
-Log attributes: procedure, status, request_id, user_id, error (on failure).
+Log attributes: procedure, status, error (on failure). Request fields come from `slogutil.ContextHandler`.
 
 ### connectrpc/requestid
 

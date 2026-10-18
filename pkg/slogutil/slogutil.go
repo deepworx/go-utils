@@ -30,7 +30,8 @@ func DefaultConfig() Config {
 }
 
 // Setup configures the global slog logger based on cfg.
-// It sets slog.SetDefault() with the configured handler writing to os.Stderr.
+// It sets slog.SetDefault() with the configured handler writing to os.Stderr,
+// wrapped in a ContextHandler.
 // Returns error if Level or Format contains invalid values.
 func Setup(cfg Config) error {
 	level, err := parseLevel(cfg.Level)
@@ -43,7 +44,7 @@ func Setup(cfg Config) error {
 		return fmt.Errorf("setup slog: %w", err)
 	}
 
-	slog.SetDefault(slog.New(handler))
+	slog.SetDefault(slog.New(NewContextHandler(handler)))
 	return nil
 }
 

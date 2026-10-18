@@ -8,13 +8,12 @@ import (
 	"runtime"
 
 	"connectrpc.com/connect"
-
-	"github.com/deepworx/go-utils/pkg/ctxutil"
 )
 
 // NewInterceptor creates a Connect RPC interceptor that recovers from panics.
 // It catches panics in handlers, logs them with stack traces, and returns
-// a connect.CodeInternal error to the client.
+// a connect.CodeInternal error to the client. Request-scoped fields such as
+// request_id are added by slogutil.ContextHandler, not by this interceptor.
 func NewInterceptor() connect.Interceptor {
 	return &interceptor{}
 }
@@ -58,11 +57,6 @@ func recoverPanic(ctx context.Context, procedure string, r any) *connect.Error {
 		slog.Any("panic", r),
 		slog.String("stack", stackStr),
 	}
-
-	if reqID, ok := ctxutil.RequestID(ctx); ok {
-		attrs = append(attrs, slog.String("request_id", reqID))
-	}
-
 	slog.ErrorContext(ctx, "panic recovered", attrs...)
 
 	return connect.NewError(connect.CodeInternal, errors.New("internal error"))

@@ -7,12 +7,12 @@ import (
 	"log/slog"
 
 	"connectrpc.com/connect"
-
-	"github.com/deepworx/go-utils/pkg/ctxutil"
 )
 
 // NewInterceptor creates a Connect RPC interceptor that logs requests and responses.
 // Successful requests are logged at Info level, errors at Warn level.
+// Request-scoped fields such as request_id and user_id are added by
+// slogutil.ContextHandler, not by this interceptor.
 func NewInterceptor() connect.Interceptor {
 	return &interceptor{}
 }
@@ -43,13 +43,6 @@ func logRequest(ctx context.Context, procedure string, err error) {
 	attrs := []any{
 		slog.String("procedure", procedure),
 		slog.String("status", getStatus(err)),
-	}
-
-	if reqID, ok := ctxutil.RequestID(ctx); ok {
-		attrs = append(attrs, slog.String("request_id", reqID))
-	}
-	if userID, ok := ctxutil.UserID(ctx); ok {
-		attrs = append(attrs, slog.String("user_id", userID))
 	}
 
 	if err != nil {
