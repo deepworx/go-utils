@@ -231,13 +231,13 @@ func (l *memLog) findCommand(tx *commandTx, k commandKey) (processedCommand, boo
 }
 
 // recordCommand adds c to the pending writes of tx. Like the primary key
-// in Postgres, it fails when another transaction holds the same key.
-// opened reports whether this is the transaction's first write.
+// in Postgres, it fails when any transaction, tx included, holds the same
+// key. opened reports whether this is the transaction's first write.
 func (l *memLog) recordCommand(tx *commandTx, c memCommand) (opened bool, err error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	k := commandKey{tenant: tx.tenant, id: c.cmd.id}
-	if l.commandTaken(tx, k) {
+	if l.commandTaken(k) {
 		return false, fmt.Errorf("command %s recorded concurrently: %w", c.cmd.id, ErrConcurrencyConflict)
 	}
 	p, opened := l.openPending(tx)
@@ -245,14 +245,14 @@ func (l *memLog) recordCommand(tx *commandTx, c memCommand) (opened bool, err er
 	return opened, nil
 }
 
-// commandTaken reports whether k is committed or pending in a transaction
-// other than tx. The caller holds l.mu.
-func (l *memLog) commandTaken(tx *commandTx, k commandKey) bool {
+// commandTaken reports whether k is committed or pending in any open
+// transaction. The caller holds l.mu.
+func (l *memLog) commandTaken(k commandKey) bool {
 	if _, ok := l.commands[k]; ok {
 		return true
 	}
-	for key, p := range l.pending {
-		if _, ok := p.commands[k]; ok && key != tx.pendingKey() {
+	for _, p := range l.pending {
+		if _, ok := p.commands[k]; ok {
 			return true
 		}
 	}

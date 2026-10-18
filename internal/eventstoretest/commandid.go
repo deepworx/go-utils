@@ -298,6 +298,19 @@ func (s suite) commandIDInOneTransaction(t *testing.T) {
 		}
 		h.wantAccount(t, id, accountState{version: 3, balance: 2})
 	})
+
+	t.Run("a nested repeat conflicts", func(t *testing.T) {
+		cmd := eventstore.WithCommandID(newCommandID())
+		err := uow.Execute(ctx, uuid.UUID(id), func(ctx context.Context) error {
+			_, err := h.accounts.Update(ctx, id, func(ctx context.Context, _ *account) error {
+				_, err := h.accounts.Update(ctx, id, deposit(1), cmd)
+				return err
+			}, cmd)
+			return err
+		})
+		wantErr(t, err, eventstore.ErrConcurrencyConflict)
+		h.wantAccount(t, id, accountState{version: 3, balance: 2})
+	})
 }
 
 func (s suite) commandIDConcurrentOnOtherStream(t *testing.T) {
