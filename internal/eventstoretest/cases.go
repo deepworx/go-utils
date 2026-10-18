@@ -3,6 +3,8 @@ package eventstoretest
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -359,6 +361,18 @@ func (s suite) correlation(t *testing.T) {
 			}
 			if env.CorrelationID != tt.want {
 				t.Fatalf("CorrelationID = %q, want %q", env.CorrelationID, tt.want)
+			}
+		})
+	}
+
+	for _, requestID := range []string{strings.Repeat("r", 129), "req\n1", "req 1", "räq"} {
+		t.Run(fmt.Sprintf("invalid request ID %.12q is not stored", requestID), func(t *testing.T) {
+			env, err := h.metadataOf(t, ctxutil.WithRequestID(base, requestID))
+			if err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+			if generated, err := uuid.Parse(env.CorrelationID); err != nil || generated.Version() != 7 {
+				t.Fatalf("CorrelationID = %q, want a generated UUIDv7", env.CorrelationID)
 			}
 		})
 	}

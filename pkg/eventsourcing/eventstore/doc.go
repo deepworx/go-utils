@@ -31,7 +31,8 @@
 //
 // The Tenant comes from ctxutil.TenantID. Each event records its Actor
 // (ctxutil.WithActor, else Claims.UserID), Correlation
-// (ctxutil.WithCorrelationID, else the request ID, else a UUIDv7 per Command
+// (ctxutil.WithCorrelationID, else the request ID when it is 1-128 bytes of
+// ASCII letters, digits or ".", "_", ":", "-", else a UUIDv7 per Command
 // transaction) and Causation (ctxutil.WithCausationID), as ADR-0010 defines.
 //
 // Create and Update are traced as an INTERNAL "create/update {stream type}"

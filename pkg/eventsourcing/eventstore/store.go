@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/deepworx/go-utils/internal/safeid"
 	"github.com/deepworx/go-utils/pkg/ctxutil"
 	"github.com/deepworx/go-utils/pkg/eventsourcing/aggregate"
 )
@@ -104,7 +105,7 @@ func resolveCorrelation(ctx context.Context, tx *commandTx) string {
 	if id, ok := ctxutil.CorrelationID(ctx); ok {
 		return id
 	}
-	if id, _ := ctxutil.RequestID(ctx); id != "" {
+	if id, _ := ctxutil.RequestID(ctx); safeid.Valid(id) {
 		return id
 	}
 	return tx.correlation

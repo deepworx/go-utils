@@ -3,6 +3,7 @@ package requestid
 import (
 	"context"
 	"net/http"
+	"strings"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -43,6 +44,46 @@ func TestEnsureRequestID_FromHeader(t *testing.T) {
 	}
 	if id != "existing-request-id" {
 		t.Errorf("request ID = %q, want %q", id, "existing-request-id")
+	}
+}
+
+// generatedIDLen is the length of a generateID result: a UUID in hex.
+const generatedIDLen = 32
+
+func TestEnsureRequestID_HeaderValidation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		header string
+		keep   bool
+	}{
+		{name: "hex", header: "0a1b2c3d4e5f", keep: true},
+		{name: "uuid", header: "0192f5c4-7d3a-7b2e-9f10-3c4d5e6f7a8b", keep: true},
+		{name: "allowed punctuation", header: "svc.api:req_42", keep: true},
+		{name: "max length", header: strings.Repeat("a", 128), keep: true},
+		{name: "too long", header: strings.Repeat("a", 129)},
+		{name: "space", header: "req 1"},
+		{name: "newline", header: "req\n1"},
+		{name: "non-ascii", header: "räq"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			i := &interceptor{headerName: "X-Request-ID"}
+			headers := http.Header{}
+			headers["X-Request-Id"] = []string{tt.header}
+
+			id, _ := ctxutil.RequestID(i.ensureRequestID(context.Background(), headers))
+
+			if tt.keep && id != tt.header {
+				t.Errorf("request ID = %q, want header %q kept", id, tt.header)
+			}
+			if !tt.keep && (id == tt.header || len(id) != generatedIDLen) {
+				t.Errorf("request ID = %q, want a generated ID replacing %q", id, tt.header)
+			}
+		})
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"connectrpc.com/connect"
 	"github.com/google/uuid"
 
+	"github.com/deepworx/go-utils/internal/safeid"
 	"github.com/deepworx/go-utils/pkg/ctxutil"
 )
 
@@ -26,7 +27,8 @@ func DefaultConfig() Config {
 }
 
 // NewInterceptor creates a Connect RPC interceptor that propagates or generates request IDs.
-// It extracts the request ID from the configured header, or generates a new UUID v4 if missing.
+// It extracts the request ID from the configured header, or generates a new UUID v4 if the
+// header is missing or is not 1-128 bytes of ASCII letters, digits or ".", "_", ":", "-".
 // The request ID is stored in the context via ctxutil.WithRequestID.
 func NewInterceptor(cfg Config) connect.Interceptor {
 	headerName := cfg.HeaderName
@@ -63,7 +65,7 @@ func (i *interceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) co
 
 func (i *interceptor) ensureRequestID(ctx context.Context, headers http.Header) context.Context {
 	id := headers.Get(i.headerName)
-	if id == "" {
+	if !safeid.Valid(id) {
 		id = generateID()
 	}
 	return ctxutil.WithRequestID(ctx, id)
