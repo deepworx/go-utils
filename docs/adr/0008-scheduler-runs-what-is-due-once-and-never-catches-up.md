@@ -6,7 +6,7 @@
 
 - **One run per missed date or slot.** This was rejected because a state-derived sweep finds the same candidates on every replayed date; catching up a week would run the same sweep seven times.
 - **Cron expressions.** This was rejected because they need a parser or a dependency, and a "monthly" job is a daily sweep whose query finds nothing on most days.
-- **Interval state in the leader's memory (CPQ).** This was rejected because every rollout or failover resets the clock and runs the job early; with frequent releases the cadence drifts arbitrarily.
+- **Interval state in the leader's memory.** This was rejected because every rollout or failover resets the clock and runs the job early; with frequent releases the cadence drifts arbitrarily.
 - **Fixed delay (`finished_at + Every`).** This was rejected because each run and each outage shifts the cadence; the grid keeps it stable across rollouts.
 
 ## Consequences

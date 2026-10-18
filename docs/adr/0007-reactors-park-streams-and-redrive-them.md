@@ -6,7 +6,7 @@ A Reactor that fails to react to an event, once its retries are spent or at once
 
 - **Stop the Reactor like any Consumer.** This was rejected because a Reactor's failures mostly come from the external world (a 503, a 422 for one record). Halting every tenant's side effects for one bad record makes the blast radius the whole service.
 - **Skip the failed event (dead-letter) and keep the Stream flowing.** This was rejected because later events of the same Stream would then reach the external system ahead of an earlier one, for example a rename sent before the create it depends on.
-- **Manual redrive only (CPQ).** This was rejected because a short outage parks every Stream active in that window, and each one would need a human. With the schedule, outages heal themselves, and exhaustion still surfaces real poison events.
+- **Manual redrive only.** This was rejected because a short outage parks every Stream active in that window, and each one would need a human. With the schedule, outages heal themselves, and exhaustion still surfaces real poison events.
 
 ## Consequences
 

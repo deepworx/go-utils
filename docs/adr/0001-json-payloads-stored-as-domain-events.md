@@ -1,6 +1,6 @@
 # JSON payloads, stored as the domain events themselves
 
-Event payloads are JSON (stdlib `encoding/json`), and the stored shape is the domain event struct itself: exported fields with mandatory `json` tags, no separate wire type and no mapper. The library serves new services and prototypes, which need to store their first event without `.proto` files, codegen or defining every event twice. This deliberately departs from the ariadne-cpq reference, which stores Protobuf through hand-written mappers.
+Event payloads are JSON (stdlib `encoding/json`), and the stored shape is the domain event struct itself: exported fields with mandatory `json` tags, no separate wire type and no mapper. The library serves new services and prototypes, which need to store their first event without `.proto` files, codegen or defining every event twice. This deliberately rules out Protobuf payloads mapped by hand-written converters.
 
 ## Considered Options
 

@@ -11,7 +11,7 @@ Every lease holder must make its own writes safe against a concurrent former hol
 ## Considered Options
 
 - **Fencing tokens from a `leases` table.** Each acquire increments a generation that holders pass to their writes. This was rejected because every user already has a natural fence in its own table, and a shared token couples all packages to one more table and one more write per acquire.
-- **One connection per lease (CPQ).** This was rejected because it costs one backend per Consumer and job lock, and still needs a ping per connection to detect loss. A single connection loses all leases at once, which holders must handle anyway.
+- **One connection per lease.** This was rejected because it costs one backend per Consumer and job lock, and still needs a ping per connection to detect loss. A single connection loses all leases at once, which holders must handle anyway.
 
 ## Consequences
 

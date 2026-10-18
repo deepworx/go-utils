@@ -9,9 +9,9 @@ Every event row carries `actor TEXT NOT NULL`, `correlation_id TEXT NOT NULL`, `
 
 ## Considered Options
 
-- **Actor from `Claims.UserID` only, system actors via a fake user ID (CPQ).** This was rejected because it makes `UserID` mean "authenticated user" in one place and "whoever acts" in another, and CPQ silently stores an empty actor when there is no user.
+- **Actor from `Claims.UserID` only, system actors via a fake user ID.** This was rejected because it makes `UserID` mean "authenticated user" in one place and "whoever acts" in another, and an append without a user would silently store an empty actor.
 - **Free-text causation** (`event:<uuid>`, `inbox:<source>:<key>`). This was rejected because causation then no longer reliably points at a row in the log; the Inbox's provenance is already in the actor and the correlation.
-- **Caller-supplied `occurred_at`** (CPQ's `OccurredOn` override). This was rejected because a timestamp column that is sometimes wall clock and sometimes business time is unreliable for both.
+- **Caller-supplied `occurred_at`** (an `OccurredOn` override). This was rejected because a timestamp column that is sometimes wall clock and sometimes business time is unreliable for both.
 - **Correlation required, never generated.** This was rejected because it makes every prototype and test set it by hand for no gain.
 
 ## Consequences

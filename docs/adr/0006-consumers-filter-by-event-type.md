@@ -8,7 +8,7 @@ A Consumer reads only the event types it handles. The set is derived from its Ro
 
 ## Considered Options
 
-- **Stream-type filter (CPQ).** It is coarse: a Consumer reads every event of its streams and ignores the ones it doesn't route. As a result, lag and `Await` count events that never matter, and the filter has to be declared separately from the handlers.
+- **Stream-type filter.** It is coarse: a Consumer reads every event of its streams and ignores the ones it doesn't route. As a result, lag and `Await` count events that never matter, and the filter has to be declared separately from the handlers.
 - **Both filters.** Two predicates have to agree across the read, lag, `Await` and SQL, for no gain over event type alone, because event type names already carry their stream (`Todo.Task.Opened`).
 - **Treating every filter change as a version bump.** This is simple but forces pointless rebuilds for event types that have never been written, and it is wrong for Reactors, whose new handlers must not replay history.
 

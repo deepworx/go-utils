@@ -1,6 +1,6 @@
 # Library schema shipped as documentation only
 
-The Postgres schema the library needs (tables, triggers, functions) is shipped as documentation, not as code: one copyable file, `docs/postgres/schema.sql`, written for schema `public`, plus a ready-to-copy upgrade snippet in `docs/postgres/upgrades/` for every change to it. The library requires that the schema exists and never runs DDL. Services already have migration tooling (golang-migrate, as in ariadne-cpq), and a second migrator or a tool-specific embedded FS would be one more thing to own, wire and keep compatible.
+The Postgres schema the library needs (tables, triggers, functions) is shipped as documentation, not as code: one copyable file, `docs/postgres/schema.sql`, written for schema `public`, plus a ready-to-copy upgrade snippet in `docs/postgres/upgrades/` for every change to it. The library requires that the schema exists and never runs DDL. Services already have migration tooling (typically golang-migrate), and a second migrator or a tool-specific embedded FS would be one more thing to own, wire and keep compatible.
 
 ## Considered Options
 
