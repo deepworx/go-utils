@@ -258,3 +258,50 @@ func TestTickReportsLastSuccessOfIntervalJob(t *testing.T) {
 		t.Errorf("scheduler.job.last_success = %v, want >= %d", got, start.Unix())
 	}
 }
+
+func TestNewLeaderReportsLastSuccessOfIntervalJobAfterFailedRun(t *testing.T) {
+	t.Parallel()
+
+	pool := pgtest.New(t)
+	success := utc(t, "2026-03-10T08:00:00Z")
+	previous := newRunningSchedulerOn(t, pool, scheduler.Config{Location: berlin(t)})
+	mustRegister(t, previous, scheduler.Job{
+		Name:  "sweep",
+		Every: time.Hour,
+		Run: func(_ context.Context, r scheduler.Run) (scheduler.Outcome, error) {
+			if r.Due.Equal(success) {
+				return scheduler.Outcome{}, nil
+			}
+			return scheduler.Outcome{}, errors.New("boom")
+		},
+	})
+	mustTick(t, previous, success)
+	mustTick(t, previous, success.Add(time.Hour))
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := previous.Run(ctx); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	reader := sdkmetric.NewManualReader()
+	leader := newRunningSchedulerOn(t, pool,
+		scheduler.Config{Location: berlin(t)},
+		scheduler.WithMeterProvider(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))),
+	)
+	mustRegister(t, leader, scheduler.Job{
+		Name:  "sweep",
+		Every: time.Hour,
+		Run: func(context.Context, scheduler.Run) (scheduler.Outcome, error) {
+			return scheduler.Outcome{}, errors.New("boom")
+		},
+	})
+	mustTick(t, leader, success.Add(time.Hour+time.Minute))
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(t.Context(), &rm); err != nil {
+		t.Fatalf("collect metrics: %v", err)
+	}
+	if got, want := float64Gauge(t, rm, "scheduler.job.last_success"), float64(success.Unix()); got != want {
+		t.Errorf("scheduler.job.last_success = %v, want %v", got, want)
+	}
+}
