@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/deepworx/go-utils/internal/eventstoretest"
@@ -24,6 +25,9 @@ import (
 	"github.com/deepworx/go-utils/pkg/postgres/notify"
 	"github.com/deepworx/go-utils/pkg/postgres/numbering"
 )
+
+// restrictViolation is the SQLSTATE of the append-only triggers.
+const restrictViolation = "23001"
 
 func TestMain(m *testing.M) { os.Exit(pgtest.Run(m)) }
 
@@ -56,7 +60,8 @@ func TestPgEventsRejectChanges(t *testing.T) {
 		"DELETE FROM public.events",
 		"TRUNCATE public.events",
 	} {
-		if _, err := pool.Exec(t.Context(), stmt); err == nil || !strings.Contains(err.Error(), "append-only") {
+		var pgErr *pgconn.PgError
+		if _, err := pool.Exec(t.Context(), stmt); !errors.As(err, &pgErr) || pgErr.Code != restrictViolation {
 			t.Errorf("%s: err = %v, want append-only rejection", stmt, err)
 		}
 	}

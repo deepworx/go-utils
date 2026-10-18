@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/deepworx/go-utils/internal/consumertest"
@@ -25,6 +26,10 @@ import (
 	"github.com/deepworx/go-utils/pkg/postgres/lease"
 	"github.com/deepworx/go-utils/pkg/postgres/notify"
 )
+
+// objectNotInPrerequisiteState is the SQLSTATE consumer_pending raises
+// for a Stopped Cursor.
+const objectNotInPrerequisiteState = "55000"
 
 func TestMain(m *testing.M) { os.Exit(pgtest.Run(m)) }
 
@@ -266,7 +271,8 @@ func TestPgConsumerPending(t *testing.T) {
 			t.Fatalf("Drain = %v, want ErrStopped", err)
 		}
 		_, err := queryPending(e.pool, "stopping", 10)
-		if err == nil || !strings.Contains(err.Error(), "stopped") {
+		var pgErr *pgconn.PgError
+		if !errors.As(err, &pgErr) || pgErr.Code != objectNotInPrerequisiteState {
 			t.Errorf("consumer_pending of a Stopped Cursor = %v, want a stopped error", err)
 		}
 	})
