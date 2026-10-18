@@ -691,10 +691,14 @@ for at most the ctx deadline or else 2s. It returns:
 ### Inbox and scheduler
 
 The Inbox is a deduplicated work queue for incoming webhooks, independent of
-the event log. The HTTP handler only stores the message and answers 202. The
-Worker of its Source handles it later, with retries:
+the event log. The HTTP handler authenticates the webhook, stores the message
+and answers 202. The Worker of its Source handles it later, with retries:
 
 ```go
+if err := verifyTrackerSignature(r.Header, body); err != nil {
+	http.Error(w, "invalid signature", http.StatusUnauthorized)
+	return
+}
 _, err = store.Insert(r.Context(), inbox.Message{
 	Source:  TrackerSource,
 	Key:     hook.DeliveryID, // a redelivered webhook is dropped
@@ -720,6 +724,13 @@ func (a *App) HandleTrackerWebhook(ctx context.Context, d inbox.Delivery) error 
 	return err
 }
 ```
+
+`Insert` drops a message whose Source, Tenant and Key are already stored, so
+authenticate before inserting: a forged message with a real Key would drop
+the real delivery
+([ADR-0015](../adr/0015-inbox-messages-are-deduplicated-per-source-and-tenant.md)).
+A Handler that finds a bad signature returns `inbox.Ignore`, not
+`inbox.Permanent`, so forgeries never wait for an Operator.
 
 The handler ctx carries the message's Tenant, the Actor
 `system:inbox:tracker` and the Correlation `inbox:tracker:<key>`. `Insert`
@@ -897,3 +908,4 @@ version bump.
 | [0009](../adr/0009-event-log-is-append-only-and-tenant-data-is-not-erased.md) | The event log is append-only and tenant data is not erased |
 | [0010](../adr/0010-event-metadata-actor-correlation-causation.md) | Event metadata: actor, correlation and causation |
 | [0011](../adr/0011-leases-are-not-fences.md) | Leases are not fences: holders fence their own writes |
+| [0015](../adr/0015-inbox-messages-are-deduplicated-per-source-and-tenant.md) | Inbox messages are deduplicated per Source and Tenant |

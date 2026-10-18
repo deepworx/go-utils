@@ -101,5 +101,5 @@ A durable, leased work queue for incoming external messages (e.g. webhooks), ind
 _Avoid_: Webhook inbox
 
 **Source**:
-The named origin of Inbox messages (e.g. one webhook provider); a message's key is unique within its Source, and each Source has its own handler.
+The named origin of Inbox messages (e.g. one webhook provider); a message's key is unique within its Source and Tenant (ADR-0015), and each Source has its own handler.
 _Avoid_: Provider, channel, topic
