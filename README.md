@@ -376,7 +376,7 @@ mux.Handle(servicepb.NewServiceHandler(
 
 Options:
 - `WithTrustRemote()` - Trust incoming trace context (internal services)
-- `WithoutServerPeerAttributes()` - Reduce metric cardinality
+- `WithServerPeerAttributes()` - Add peer address/port to server spans (off by default, high cardinality)
 
 ### connectrpc/validation (via validate)
 

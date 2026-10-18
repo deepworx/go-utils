@@ -12,9 +12,9 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"github.com/lestrrat-go/jwx/v3/jwa"
-	"github.com/lestrrat-go/jwx/v3/jwk"
-	"github.com/lestrrat-go/jwx/v3/jwt"
+	"github.com/lestrrat-go/jwx/v4/jwa"
+	"github.com/lestrrat-go/jwx/v4/jwk"
+	"github.com/lestrrat-go/jwx/v4/jwt"
 
 	"github.com/deepworx/go-utils/pkg/ctxutil"
 )
@@ -620,7 +620,7 @@ func generateTestKeys(t *testing.T) (*rsa.PrivateKey, jwk.Key) {
 		t.Fatalf("failed to generate RSA key: %v", err)
 	}
 
-	pubJWK, err := jwk.Import(&privKey.PublicKey)
+	pubJWK, err := jwk.Import[jwk.Key](&privKey.PublicKey)
 	if err != nil {
 		t.Fatalf("failed to create JWK: %v", err)
 	}
@@ -642,7 +642,7 @@ func generateTestKeysWithoutAlg(t *testing.T) (*rsa.PrivateKey, jwk.Key) {
 		t.Fatalf("failed to generate RSA key: %v", err)
 	}
 
-	pubJWK, err := jwk.Import(&privKey.PublicKey)
+	pubJWK, err := jwk.Import[jwk.Key](&privKey.PublicKey)
 	if err != nil {
 		t.Fatalf("failed to create JWK: %v", err)
 	}
@@ -685,7 +685,7 @@ func signTestTokenWithKeyID(t *testing.T, privKey *rsa.PrivateKey, keyID string,
 		}
 	}
 
-	privJWK, err := jwk.Import(privKey)
+	privJWK, err := jwk.Import[jwk.Key](privKey)
 	if err != nil {
 		t.Fatalf("failed to import private key: %v", err)
 	}
