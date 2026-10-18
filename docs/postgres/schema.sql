@@ -39,6 +39,9 @@ CREATE TABLE public.events (
     causation_id    UUID        NULL,
     trace_context   TEXT        NULL,
     recorded_at     TIMESTAMPTZ NOT NULL,
+    -- Required under this exact name: the store maps its violation to
+    -- ErrConcurrencyConflict, and it is the last line against duplicate
+    -- stream positions (ADR-0003, ADR-0013).
     CONSTRAINT events_stream_position_key UNIQUE (tenant_id, stream_id, stream_position)
 );
 

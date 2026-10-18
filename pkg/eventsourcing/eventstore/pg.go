@@ -19,7 +19,8 @@ import (
 const defaultSchema = "public"
 
 // streamPositionKey is the unique constraint on (tenant_id, stream_id,
-// stream_position) in docs/postgres/schema.sql.
+// stream_position) in docs/postgres/schema.sql. Hosts must keep it under
+// this name (ADR-0003).
 const streamPositionKey = "events_stream_position_key"
 
 // processedCommandsKey is the primary key on (tenant_id, command_id) in

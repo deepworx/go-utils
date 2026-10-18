@@ -200,8 +200,13 @@ func (a *App) CompleteTask(ctx context.Context, id todo.TaskID) (eventstore.Comm
   as a new command, so clients must not resend older commands.
 - Writers to one Stream are serialized from the load until the commit. On
   Postgres this uses a transaction-scoped advisory lock.
+- On Postgres, Command transactions must run at READ COMMITTED, including an
+  outer transaction they join. Any other isolation level fails with
+  `eventstore.ErrUnsupportedIsolation` (ADR-0013).
 - Guard (`pkg/postgres/guard`) and numbering (`pkg/postgres/numbering`) calls
-  inside `fn` join the Command transaction.
+  inside `fn` join the Command transaction. The stream lock serializes only
+  writers to this Stream, so reads of other data are as fresh as READ
+  COMMITTED, no more.
 
 ### Request metadata: Tenant, Actor, Correlation
 
@@ -473,7 +478,9 @@ With golang-migrate:
 1. Copy `docs/postgres/schema.sql` of the go-utils version you depend on to
    `migrations/000001_eventsourcing.up.sql`. Delete the sections of packages
    you don't use (`guards`, `identifier_sequences`, `scheduler_*`,
-   `inbox_messages`, `parked_*`). Keep the PostgreSQL 15 guard at the top.
+   `inbox_messages`, `parked_*`). Keep the PostgreSQL 15 guard at the top,
+   and keep every constraint of the tables you use under its name, above
+   all `events_stream_position_key`.
 2. Put the service's own tables and views in the next migrations
    (`000002_task_list.up.sql`).
 3. Apply with `migrate -path migrations -database "$DATABASE_URL" up`. Do not
