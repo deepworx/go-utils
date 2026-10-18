@@ -56,18 +56,22 @@ func (s *Scheduler) claimInterval(ctx context.Context, job Job, now time.Time) (
 
 // finishInterval records the end of the claimed attempt, fenced by its
 // attempt number and start. An aborted attempt becomes due again after the
-// retry delay, or at the next grid point if that comes first.
+// retry delay, or at the next grid point if that comes first. A successful
+// attempt sets last_success_at, which failed attempts keep.
 func (s *Scheduler) finishInterval(ctx context.Context, in finishInput) error {
-	var retryAt *time.Time
+	var retryAt, succeededAt *time.Time
 	if in.err != nil {
 		at := in.finishedAt.Add(s.intervalRetryAfter(in.job))
 		retryAt = &at
+	} else {
+		succeededAt = &in.finishedAt
 	}
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE `+s.intervalsTable+`
-		SET finished_at = $4, failures = $5, error = $6, due_at = LEAST(due_at, $7::timestamptz)
+		SET finished_at = $4, failures = $5, error = $6, due_at = LEAST(due_at, $7::timestamptz),
+		    last_success_at = COALESCE($8::timestamptz, last_success_at)
 		WHERE job = $1 AND attempt = $2 AND started_at = $3 AND finished_at IS NULL`,
-		in.job.Name, in.run.Attempt, in.startedAt, in.finishedAt, in.failures, errorText(in.err), retryAt,
+		in.job.Name, in.run.Attempt, in.startedAt, in.finishedAt, in.failures, errorText(in.err), retryAt, succeededAt,
 	)
 	if err != nil {
 		return fmt.Errorf("scheduler: finish %s at %s: %w", in.job.Name, in.run.Due.Format(time.RFC3339), err)

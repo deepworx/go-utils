@@ -109,13 +109,15 @@ func (s *Scheduler) resign() {
 // without such a run are absent.
 func (s *Scheduler) lastSuccess(ctx context.Context, jobs []string) (map[string]time.Time, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT job, max(finished_at)
+		SELECT job, max(succeeded_at)
 		FROM (
-			SELECT job, finished_at, error FROM `+s.runsTable+`
+			SELECT job, finished_at AS succeeded_at FROM `+s.runsTable+`
+			WHERE finished_at IS NOT NULL AND error IS NULL
 			UNION ALL
-			SELECT job, finished_at, error FROM `+s.intervalsTable+`
+			SELECT job, last_success_at FROM `+s.intervalsTable+`
+			WHERE last_success_at IS NOT NULL
 		) runs
-		WHERE job = ANY($1) AND finished_at IS NOT NULL AND error IS NULL
+		WHERE job = ANY($1)
 		GROUP BY job`, jobs)
 	if err != nil {
 		return nil, fmt.Errorf("scheduler: query last success: %w", err)
