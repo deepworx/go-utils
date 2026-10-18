@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.8.0](https://github.com/deepworx/go-utils/compare/v0.7.0...v0.8.0) (2026-10-18)
+
+
+### ⚠ BREAKING CHANGES
+
+* **connectrpc:** all NewInterceptor constructors return connect.ServerInterceptor, interceptor.BuildDefault and BuildDefaultWithAuth return []connect.ServerInterceptor, and grpchealth.Aggregator.Handler is replaced by RegisterService.
+
+### Features
+
+* **connectrpc:** migrate to connect-go v2 ([#61](https://github.com/deepworx/go-utils/issues/61)) ([2c75b41](https://github.com/deepworx/go-utils/commit/2c75b41c4d677ce8783501460111200e4b1b8be7))
+
+
+### Bug Fixes
+
+* **deps:** update all dependencies and pin actions ([#57](https://github.com/deepworx/go-utils/issues/57)) ([8dc9b75](https://github.com/deepworx/go-utils/commit/8dc9b753ecf22bf62aad9744033c67998f8953e4))
+
 ## [0.7.0](https://github.com/deepworx/go-utils/compare/v0.6.0...v0.7.0) (2026-02-17)
 
 
