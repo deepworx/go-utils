@@ -104,7 +104,7 @@ type commandInput struct {
 }
 
 // command runs fn in an INTERNAL Command span and records its duration. A
-// replayed result marks the span.
+// replayed result marks the span unless the command failed.
 func (in instruments) command(ctx context.Context, cmd commandInput, fn func(ctx context.Context) (CommandResult, error)) (CommandResult, error) {
 	start := time.Now()
 	ctx, span := in.tracer.Start(ctx, cmd.name,
@@ -118,7 +118,7 @@ func (in instruments) command(ctx context.Context, cmd commandInput, fn func(ctx
 	defer span.End()
 	res, err := fn(ctx)
 	labels := in.commandLabels
-	if res.Replayed {
+	if res.Replayed && err == nil {
 		labels = in.replayedLabels
 		span.SetAttributes(telemetry.AttrCommandReplayed.Bool(true))
 	}

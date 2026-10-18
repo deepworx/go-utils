@@ -257,6 +257,53 @@ func TestCommandSpanMarksReplay(t *testing.T) {
 	}
 }
 
+var errCommitFailed = errors.New("commit failed")
+
+// failingCommit fails every Command transaction after fn succeeds while
+// fail is set.
+type failingCommit struct {
+	*eventstore.InMemoryUnitOfWork
+	fail bool
+}
+
+func (u *failingCommit) Within(ctx context.Context, stream uuid.UUID, fn func(ctx context.Context) error) error {
+	err := u.InMemoryUnitOfWork.Within(ctx, stream, fn)
+	if err == nil && u.fail {
+		return errCommitFailed
+	}
+	return err
+}
+
+func TestCommandSpanFailedReplayIsNotMarked(t *testing.T) {
+	t.Parallel()
+	rec, tp := newRecorder(t)
+	codec := eventstore.NewCodec()
+	eventstore.Register[taskCreated](codec)
+	eventstore.Register[taskRenamed](codec)
+	uow := &failingCommit{InMemoryUnitOfWork: eventstore.NewInMemoryUnitOfWork()}
+	repo := eventstore.NewRepository[taskID, task](eventstore.RepositoryConfig{
+		Store:      eventstore.NewInMemoryStore(codec),
+		UnitOfWork: uow,
+	}, eventstore.WithTracerProvider(tp))
+	ctx := userCtx("t1")
+	id := newTaskID()
+	cmd := eventstore.WithCommandID(uuid.New())
+	if _, err := repo.Create(ctx, id, createTask("a"), cmd); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	uow.fail = true
+	if _, err := repo.Create(ctx, id, createTask("a"), cmd); !errors.Is(err, errCommitFailed) {
+		t.Fatalf("repeat = %v, want %v", err, errCommitFailed)
+	}
+
+	spans := rec.Ended()
+	failed := spans[len(spans)-1]
+	if v, ok := attrValue(failed, "eventsourcing.command.replayed"); ok {
+		t.Errorf("failed repeat replayed = %v, want unset", v.AsBool())
+	}
+}
+
 // traceBackend opens a task Repository and reads back the stored
 // trace_context of every event of a Stream, NULL as "".
 type traceBackend struct {
