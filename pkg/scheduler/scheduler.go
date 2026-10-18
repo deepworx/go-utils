@@ -52,6 +52,9 @@ var (
 	// ErrNoLocation is returned by New when Config.Location is nil. There
 	// is no UTC default: the business timezone must be chosen explicitly.
 	ErrNoLocation = errors.New("scheduler: no location")
+	// ErrInvalidConfig is returned by New when Config.Pool or Config.Claims
+	// is missing.
+	ErrInvalidConfig = errors.New("scheduler: invalid config")
 	// ErrDuplicate is returned by Register for a job name that is already
 	// registered.
 	ErrDuplicate = errors.New("scheduler: duplicate job")
@@ -63,6 +66,10 @@ var (
 
 // Config configures a Scheduler.
 type Config struct {
+	// Pool stores the runs. Required.
+	Pool *pgxpool.Pool
+	// Claims grants the leases; its Run must be running. Required.
+	Claims *lease.Claims
 	// Schema holds the scheduler tables. Defaults to "public".
 	Schema string
 	// Location is the business timezone that defines a Business date.
@@ -82,11 +89,17 @@ type options struct {
 	providers telemetry.Providers
 	logger    *slog.Logger
 	locker    locker
+	now       func() time.Time
 }
 
 // WithLogger logs with logger instead of slog.Default().
 func WithLogger(logger *slog.Logger) Option {
 	return func(o *options) { o.logger = logger }
+}
+
+// WithClock sets the clock Run ticks on. The default is time.Now.
+func WithClock(now func() time.Time) Option {
+	return func(o *options) { o.now = now }
 }
 
 // WithMeterProvider records metrics with mp instead of the global provider.
@@ -107,8 +120,10 @@ type Job struct {
 	// multiples of Every on Unix time; 0 makes a daily job.
 	Every time.Duration
 	// NotBefore delays a daily job past local midnight. It is added to the
-	// midnight instant, so a run due inside a DST gap still runs. It must be
-	// less than a day, and zero for interval jobs.
+	// midnight instant, so a run due inside a DST gap still runs. On a day
+	// too short for it, the run is due NotBefore-24h before the next
+	// midnight instead. It must be less than a day, and zero for interval
+	// jobs.
 	NotBefore time.Duration
 	// Timeout bounds one run. Defaults to 30m.
 	Timeout time.Duration
@@ -161,21 +176,34 @@ type Scheduler struct {
 	logger         *slog.Logger
 	tracer         trace.Tracer
 	metrics        metrics
+	now            func() time.Time
 
 	mu     sync.Mutex
 	jobs   []Job
 	leader leader
 }
 
-// New returns a Scheduler storing its runs through pool and taking its
-// leases from claims, whose Run must be running.
-func New(pool *pgxpool.Pool, claims *lease.Claims, cfg Config, opts ...Option) (*Scheduler, error) {
-	if cfg.Location == nil {
+// New returns a Scheduler storing its runs through Config.Pool and taking
+// its leases from Config.Claims. It fails with ErrNoLocation without a
+// Location and with ErrInvalidConfig without Pool or Claims.
+func New(cfg Config, opts ...Option) (*Scheduler, error) {
+	switch {
+	case cfg.Location == nil:
 		return nil, ErrNoLocation
+	case cfg.Pool == nil:
+		return nil, fmt.Errorf("%w: nil Pool", ErrInvalidConfig)
+	case cfg.Claims == nil:
+		return nil, fmt.Errorf("%w: nil Claims", ErrInvalidConfig)
 	}
-	o := options{logger: slog.Default(), locker: claimsLocker{claims}}
+	o := options{logger: slog.Default(), locker: claimsLocker{cfg.Claims}, now: time.Now}
 	for _, opt := range opts {
 		opt(&o)
+	}
+	if o.logger == nil {
+		o.logger = slog.Default()
+	}
+	if o.now == nil {
+		o.now = time.Now
 	}
 	if cfg.Schema == "" {
 		cfg.Schema = defaultSchema
@@ -191,7 +219,7 @@ func New(pool *pgxpool.Pool, claims *lease.Claims, cfg Config, opts ...Option) (
 		o.logger.Warn("scheduler: create metrics", slog.Any(telemetry.LogError, err))
 	}
 	return &Scheduler{
-		pool:           pool,
+		pool:           cfg.Pool,
 		locker:         o.locker,
 		location:       cfg.Location,
 		retryAfter:     cfg.RetryAfter,
@@ -202,6 +230,7 @@ func New(pool *pgxpool.Pool, claims *lease.Claims, cfg Config, opts ...Option) (
 		logger:         o.logger,
 		tracer:         o.providers.Tracer(scope),
 		metrics:        m,
+		now:            o.now,
 	}, nil
 }
 

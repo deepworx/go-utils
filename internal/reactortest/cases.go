@@ -45,6 +45,7 @@ func cases(s suite) []testCase {
 		{"NoRedriveSteps", s.noRedriveSteps},
 		{"StatusCountsParked", s.statusCountsParked},
 		{"ConcurrentRedrives", s.concurrentRedrives},
+		{"RedriveDoesNotBlockLiveHold", s.redriveDoesNotBlockLiveHold},
 	}
 }
 

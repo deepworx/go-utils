@@ -47,7 +47,7 @@ func TestCleanupJobDeletesSettledMessagesOlderThanRetention(t *testing.T) {
 			claims := lease.NewClaims(pool, lease.Config{})
 			startBackground(t, claims.Run)
 			waitConnected(t, claims)
-			s, err := scheduler.New(pool, claims, scheduler.Config{Location: time.UTC})
+			s, err := scheduler.New(scheduler.Config{Pool: pool, Claims: claims, Location: time.UTC})
 			if err != nil {
 				t.Fatalf("scheduler.New() error = %v", err)
 			}

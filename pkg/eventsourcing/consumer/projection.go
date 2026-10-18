@@ -104,7 +104,10 @@ func (p *pgPort) rewind(ctx context.Context) error {
 		SET transaction_id = '0', global_position = 0, event_types = $2,
 			stopped = false, stopped_at = NULL, stopped_error = NULL
 		WHERE name = $1`, p.name, p.types)
-	return err
+	if err != nil {
+		return fmt.Errorf("rewind cursor %q: %w", p.name, err)
+	}
+	return nil
 }
 
 // changeBuffer is the capacity of an in-memory change Feed, the default of
@@ -184,11 +187,17 @@ type pgChanges struct {
 	channel  string
 }
 
+// Publish sends payload with pg_notify, on commit of the transaction in
+// ctx.
 func (c *pgChanges) Publish(ctx context.Context, payload string) error {
-	_, err := postgres.Conn(ctx, c.pool).Exec(ctx, `SELECT pg_notify($1, $2)`, c.channel, payload)
-	return err
+	if _, err := postgres.Conn(ctx, c.pool).Exec(ctx, `SELECT pg_notify($1, $2)`, c.channel, payload); err != nil {
+		return fmt.Errorf("notify %s: %w", c.channel, err)
+	}
+	return nil
 }
 
+// Subscribe returns a Feed of the change channel. It fails with
+// ErrInvalidConfig when the PgRuntime has no Listener.
 func (c *pgChanges) Subscribe() (consumerhook.Feed, error) {
 	if c.listener == nil {
 		return nil, fmt.Errorf("subscribe %s: the PgRuntime has no Listener: %w", c.channel, ErrInvalidConfig)

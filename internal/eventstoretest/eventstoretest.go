@@ -46,6 +46,10 @@ type Backend struct {
 	// Guard and Numbering must join the UnitOfWork's transactions.
 	Guard     Guard
 	Numbering Numbering
+	// Outer runs fn in a plain transaction of the UnitOfWork's backend
+	// (postgres.PgUnitOfWork or postgres.InMemoryUnitOfWork), which Command
+	// transactions in fn join.
+	Outer func(ctx context.Context, fn func(ctx context.Context) error) error
 }
 
 // Run runs the contract suite. newBackend is called once per subtest.
@@ -73,6 +77,8 @@ func Run(t *testing.T, newBackend func(t *testing.T) Backend) {
 		{"CommandTransactionRules", s.commandTransactionRules},
 		{"WithinJoins", s.withinJoins},
 		{"FailedCommandRollsBack", s.failedCommandRollsBack},
+		{"OuterTransaction/OneStream", s.outerOneStream},
+		{"OuterTransaction/HoldsStreamLock", s.outerHoldsStreamLock},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

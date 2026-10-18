@@ -83,7 +83,8 @@ type Store struct {
 }
 
 // NewStore returns a Store on pool. It fails with notify.ErrInvalidChannel
-// when the schema makes the derived channel name invalid.
+// when the schema makes the derived channel name invalid, and with
+// ErrInvalidConfig without a pool.
 func NewStore(pool *pgxpool.Pool, cfg StoreConfig, opts ...StoreOption) (*Store, error) {
 	if cfg.Schema == "" {
 		cfg.Schema = defaultSchema
@@ -91,6 +92,9 @@ func NewStore(pool *pgxpool.Pool, cfg StoreConfig, opts ...StoreOption) (*Store,
 	channel := cfg.Schema + ".inbox"
 	if err := notify.CheckChannel(channel); err != nil {
 		return nil, fmt.Errorf("inbox: schema %q: %w", cfg.Schema, err)
+	}
+	if pool == nil {
+		return nil, fmt.Errorf("%w: nil pool", ErrInvalidConfig)
 	}
 	s := &Store{
 		pool:    pool,

@@ -14,13 +14,27 @@ import (
 
 func TestMain(m *testing.M) { os.Exit(pgtest.Run(m)) }
 
-func TestNewRejectsMissingLocation(t *testing.T) {
+func TestNewRejectsIncompleteConfig(t *testing.T) {
 	t.Parallel()
 
 	pool := pgtest.New(t)
-	_, err := scheduler.New(pool, lease.NewClaims(pool, lease.Config{}), scheduler.Config{})
-	if !errors.Is(err, scheduler.ErrNoLocation) {
-		t.Fatalf("New() error = %v, want ErrNoLocation", err)
+	claims := lease.NewClaims(pool, lease.Config{})
+	tests := []struct {
+		name    string
+		cfg     scheduler.Config
+		wantErr error
+	}{
+		{name: "no location", cfg: scheduler.Config{Pool: pool, Claims: claims}, wantErr: scheduler.ErrNoLocation},
+		{name: "no pool", cfg: scheduler.Config{Claims: claims, Location: time.UTC}, wantErr: scheduler.ErrInvalidConfig},
+		{name: "no claims", cfg: scheduler.Config{Pool: pool, Location: time.UTC}, wantErr: scheduler.ErrInvalidConfig},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if _, err := scheduler.New(tt.cfg); !errors.Is(err, tt.wantErr) {
+				t.Errorf("New() error = %v, want %v", err, tt.wantErr)
+			}
+		})
 	}
 }
 
@@ -90,7 +104,8 @@ func berlin(t *testing.T) *time.Location {
 func newScheduler(t *testing.T, cfg scheduler.Config, opts ...scheduler.Option) *scheduler.Scheduler {
 	t.Helper()
 	pool := pgtest.New(t)
-	s, err := scheduler.New(pool, lease.NewClaims(pool, lease.Config{}), cfg, opts...)
+	cfg.Pool, cfg.Claims = pool, lease.NewClaims(pool, lease.Config{})
+	s, err := scheduler.New(cfg, opts...)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}

@@ -22,6 +22,14 @@ func TestNewStoreRejectsSchemaWithInvalidChannel(t *testing.T) {
 	}
 }
 
+func TestNewStoreRejectsNilPool(t *testing.T) {
+	t.Parallel()
+
+	if _, err := inbox.NewStore(nil, inbox.StoreConfig{}); !errors.Is(err, inbox.ErrInvalidConfig) {
+		t.Errorf("NewStore() error = %v, want ErrInvalidConfig", err)
+	}
+}
+
 func TestInsertRejectsIncompleteMessage(t *testing.T) {
 	t.Parallel()
 

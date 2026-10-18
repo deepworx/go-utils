@@ -88,6 +88,38 @@ func (a autoRedrive) next(redrives int) (next time.Time, exhausted bool) {
 	return a.now.Add(d), false
 }
 
+// claimInput claims the head of the hold of stream for one redrive.
+type claimInput struct {
+	stream Stream
+	// auto is set for an auto-redrive: only a due hold is claimed.
+	auto  *autoRedrive
+	token uuid.UUID
+	now   time.Time
+	// until is when the claim expires, so a crashed redrive does not block
+	// the hold for ever.
+	until time.Time
+}
+
+// claimedHead is the head of a hold claimed for a redrive.
+type claimedHead struct {
+	env eventstore.Envelope
+	// payload is set when env.Event still needs decoding.
+	payload *eventstore.Payload
+	// empty reports a hold without events, which the claim released.
+	empty bool
+}
+
+// settleInput records the outcome of replaying a claimed head and ends the
+// claim.
+type settleInput struct {
+	stream  Stream
+	token   uuid.UUID
+	eventID uuid.UUID
+	// failure is the replay error; nil releases the head.
+	failure error
+	auto    *autoRedrive
+}
+
 // headResult is the outcome of replaying the head of a hold.
 type headResult struct {
 	replayed  bool
@@ -110,10 +142,17 @@ type parkStore interface {
 	holdIfParked(ctx context.Context, in parkInput) (bool, error)
 	// park Parks the Stream of in with in as its first held event.
 	park(ctx context.Context, in parkInput) error
-	// redriveHead replays the first held event of a Stream and releases it
-	// on success. It fails with ErrNotParked when the Stream is not Parked
-	// and releases a Stream whose hold is empty.
-	redriveHead(ctx context.Context, in redriveInput) (headResult, error)
+	// claimHead claims the first held event of a Stream for a redrive,
+	// under the hold's lock but without keeping it. It fails with
+	// ErrNotParked when the Stream is not Parked (or not due) and with
+	// ErrRedriving while another unexpired claim exists, and releases a
+	// Stream whose hold is empty.
+	claimHead(ctx context.Context, in claimInput) (claimedHead, error)
+	// settleHead releases the claimed head on success, or records the
+	// failure and moves an auto-redrive's schedule on. It ends the claim
+	// and returns how many events remain held. It fails with ErrRedriving
+	// when the claim was lost.
+	settleHead(ctx context.Context, in settleInput) (remaining int, err error)
 	discard(ctx context.Context, in discardInput) error
 	list(ctx context.Context, tenant string) ([]Parked, error)
 	// due lists the Streams whose auto-redrive is due at now, earliest
@@ -134,7 +173,56 @@ func newParkStore(b consumerhook.Backend, name string) parkStore {
 	if b.Pool != nil {
 		return newPgParks(b, name)
 	}
-	return newMemParks(b.Codec)
+	return newMemParks()
+}
+
+const (
+	// claimMargin is added to the reaction timeout for a redrive claim's
+	// lifetime.
+	claimMargin = 30 * time.Second
+	// settleTimeout bounds recording a redrive's outcome, which runs even
+	// after the caller's ctx ended because the reaction already ran.
+	settleTimeout = 5 * time.Second
+)
+
+// redriveHead claims the head of the hold of in.stream, replays it outside
+// any transaction or lock and settles the outcome, so the live handler and
+// Discard never wait for a reaction.
+func (r *Reactor) redriveHead(ctx context.Context, in redriveInput) (headResult, error) {
+	token, err := uuid.NewV7()
+	if err != nil {
+		return headResult{}, fmt.Errorf("generate redrive claim: %w", err)
+	}
+	now := r.now()
+	head, err := r.parks.claimHead(ctx, claimInput{
+		stream: in.stream, auto: in.auto, token: token, now: now, until: now.Add(r.opts.timeout + claimMargin),
+	})
+	if err != nil || head.empty {
+		return headResult{}, err
+	}
+	failure := r.replayHead(ctx, in.replay, head)
+
+	settleCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), settleTimeout)
+	defer cancel()
+	remaining, err := r.parks.settleHead(settleCtx, settleInput{
+		stream: in.stream, token: token, eventID: head.env.EventID, failure: failure, auto: in.auto,
+	})
+	if err != nil {
+		return headResult{}, err
+	}
+	return headResult{replayed: failure == nil, remaining: remaining, failure: failure}, nil
+}
+
+func (r *Reactor) replayHead(ctx context.Context, replay replayFunc, h claimedHead) error {
+	env := h.env
+	if h.payload != nil {
+		event, err := r.codec.Decode(*h.payload)
+		if err != nil {
+			return fmt.Errorf("event %s: %w", env.EventID, err)
+		}
+		env.Event = event
+	}
+	return replay(ctx, env)
 }
 
 // Redrive replays the events held for s in order, one attempt each, and
@@ -158,7 +246,7 @@ func (r *Reactor) Redrive(ctx context.Context, s Stream) (RedriveResult, error) 
 // or not due for an auto-redrive.
 func (r *Reactor) redrive(ctx context.Context, in redriveInput) (res RedriveResult, failure, err error) {
 	for {
-		head, err := r.parks.redriveHead(ctx, in)
+		head, err := r.redriveHead(ctx, in)
 		switch {
 		case errors.Is(err, ErrNotParked) && res.Replayed > 0:
 			return res, nil, nil

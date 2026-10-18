@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/deepworx/go-utils/internal/eventstoretest"
@@ -24,6 +25,9 @@ import (
 	"github.com/deepworx/go-utils/pkg/postgres/notify"
 	"github.com/deepworx/go-utils/pkg/postgres/numbering"
 )
+
+// restrictViolation is the SQLSTATE of the append-only triggers.
+const restrictViolation = "23001"
 
 func TestMain(m *testing.M) { os.Exit(pgtest.Run(m)) }
 
@@ -38,6 +42,7 @@ func TestPgContract(t *testing.T) {
 			UnitOfWork: newPgUnitOfWork(t, pool, ""),
 			Guard:      guard.NewPgStore(pool),
 			Numbering:  numbering.NewPgStore(pool),
+			Outer:      postgres.NewUnitOfWork(pool).Execute,
 		}
 	})
 }
@@ -55,7 +60,8 @@ func TestPgEventsRejectChanges(t *testing.T) {
 		"DELETE FROM public.events",
 		"TRUNCATE public.events",
 	} {
-		if _, err := pool.Exec(t.Context(), stmt); err == nil || !strings.Contains(err.Error(), "append-only") {
+		var pgErr *pgconn.PgError
+		if _, err := pool.Exec(t.Context(), stmt); !errors.As(err, &pgErr) || pgErr.Code != restrictViolation {
 			t.Errorf("%s: err = %v, want append-only rejection", stmt, err)
 		}
 	}
@@ -144,6 +150,36 @@ func TestPgNonPublicSchemaUsesDerivedNames(t *testing.T) {
 			t.Fatalf("same stream in public: %v, want no wait", err)
 		}
 	})
+}
+
+func TestPgConstructorsRejectMissingDependencies(t *testing.T) {
+	t.Parallel()
+	pool := &pgxpool.Pool{}
+	tests := []struct {
+		name string
+		new  func() error
+	}{
+		{"store without pool", func() error {
+			_, err := eventstore.NewPgStore(eventstore.PgStoreConfig{Codec: eventstore.NewCodec()})
+			return err
+		}},
+		{"store without codec", func() error {
+			_, err := eventstore.NewPgStore(eventstore.PgStoreConfig{Pool: pool})
+			return err
+		}},
+		{"unit of work without postgres unit of work", func() error {
+			_, err := eventstore.NewPgUnitOfWork(eventstore.PgUnitOfWorkConfig{})
+			return err
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if err := tt.new(); !errors.Is(err, eventstore.ErrInvalidConfig) {
+				t.Errorf("err = %v, want ErrInvalidConfig", err)
+			}
+		})
+	}
 }
 
 func TestPgConstructorsRejectSchemaWithTooLongChannel(t *testing.T) {

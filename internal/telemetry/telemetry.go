@@ -78,18 +78,6 @@ func (i Instrument) Int64UpDownCounter(m metric.Meter) (metric.Int64UpDownCounte
 	return m.Int64UpDownCounter(i.Name, metric.WithUnit(i.Unit), metric.WithDescription(i.Description))
 }
 
-// Int64Gauge creates the instrument as a synchronous int64 gauge, recorded
-// by the lock or lease owner after each poll.
-func (i Instrument) Int64Gauge(m metric.Meter) (metric.Int64Gauge, error) {
-	return m.Int64Gauge(i.Name, metric.WithUnit(i.Unit), metric.WithDescription(i.Description))
-}
-
-// Float64Gauge creates the instrument as a synchronous float64 gauge,
-// recorded by the lock or lease owner after each poll.
-func (i Instrument) Float64Gauge(m metric.Meter) (metric.Float64Gauge, error) {
-	return m.Float64Gauge(i.Name, metric.WithUnit(i.Unit), metric.WithDescription(i.Description))
-}
-
 // Int64ObservableGauge creates the instrument as an asynchronous int64
 // gauge. An owner-only gauge registers its callback only while the lock or
 // lease is held, so a pod that loses it stops reporting the series.

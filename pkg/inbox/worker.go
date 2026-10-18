@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -17,6 +16,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/deepworx/go-utils/internal/backoff"
+	"github.com/deepworx/go-utils/internal/safecall"
 	"github.com/deepworx/go-utils/internal/telemetry"
 	"github.com/deepworx/go-utils/pkg/ctxutil"
 	"github.com/deepworx/go-utils/pkg/postgres/lease"
@@ -29,7 +29,9 @@ const (
 	defaultConcurrency  = 1
 	defaultTimeout      = 60 * time.Second
 	defaultPollInterval = time.Second
-	defaultGaugeEvery   = 15 * time.Second
+	// defaultLeaseRetry is how often a Worker without the telemetry lease
+	// tries to take it.
+	defaultLeaseRetry = 15 * time.Second
 	// leaseMargin extends a claim beyond the handler Timeout, so a slow but
 	// live handler settles before another Worker may claim its message.
 	leaseMargin   = 30 * time.Second
@@ -138,14 +140,17 @@ type Worker struct {
 	listener     *notify.Listener
 	claims       *lease.Claims
 	pollInterval time.Duration
-	gaugeEvery   time.Duration
+	leaseRetry   time.Duration
 
 	running atomic.Bool
 }
 
 // NewWorker returns a Worker for cfg.Source on store. It fails with
-// ErrInvalidConfig when Source or Handle is missing.
+// ErrInvalidConfig when store, Source or Handle is missing.
 func NewWorker(store *Store, cfg Config, opts ...Option) (*Worker, error) {
+	if store == nil {
+		return nil, fmt.Errorf("%w: nil store", ErrInvalidConfig)
+	}
 	if cfg.Source == "" {
 		return nil, fmt.Errorf("%w: empty source", ErrInvalidConfig)
 	}
@@ -189,7 +194,7 @@ func NewWorker(store *Store, cfg Config, opts ...Option) (*Worker, error) {
 		listener:     o.listener,
 		claims:       o.claims,
 		pollInterval: o.pollInterval,
-		gaugeEvery:   defaultGaugeEvery,
+		leaseRetry:   defaultLeaseRetry,
 	}, nil
 }
 
@@ -262,8 +267,20 @@ func (w *Worker) wait(ctx context.Context, wake <-chan notify.Notification) bool
 
 // process claims and handles due messages with up to Concurrency handlers
 // in flight, until a claim finds nothing due. It returns after every
-// handler has settled.
+// handler has settled. Messages whose last attempt never settled are
+// Parked first.
 func (w *Worker) process(ctx context.Context) error {
+	parked, err := w.store.parkExpired(ctx, parkExpiredInput{Source: w.source, MaxAttempts: len(w.retries) + 1})
+	if err != nil {
+		return err
+	}
+	if parked > 0 {
+		w.metrics.handled.Add(ctx, parked, metric.WithAttributes(
+			telemetry.AttrSource.String(w.source),
+			telemetry.AttrOutcome.String(string(outcomeParked)),
+		))
+		w.logger.ErrorContext(ctx, "inbox: message parked", slog.String(telemetry.LogError, expiredClaimError))
+	}
 	slots := make(chan struct{}, w.concurrency)
 	var wg sync.WaitGroup
 	defer wg.Wait()
@@ -327,54 +344,81 @@ func (w *Worker) handleClaimed(ctx context.Context, c claimed) {
 	w.metrics.handleDuration.Record(ctx, time.Since(start).Seconds(),
 		metric.WithAttributes(telemetry.AttrSource.String(w.source)))
 
+	logger := w.logger.With(slog.Int64(telemetry.LogMessageID, c.ID), slog.Int(telemetry.LogAttempt, c.Attempt))
+	if c.Tenant != "" {
+		logger = logger.With(slog.String(telemetry.LogTenantID, c.Tenant))
+	}
+	settleCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), settleTimeout)
+	defer cancel()
+	if err != nil && ctx.Err() != nil {
+		w.releaseOnShutdown(settleCtx, logger, c)
+		return
+	}
+
 	st := w.settlement(c, err)
-	span.SetAttributes(telemetry.AttrOutcome.String(outcome(st)))
+	span.SetAttributes(telemetry.AttrOutcome.String(string(st.outcome())))
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		span.SetAttributes(telemetry.AttrErrorType.String(fmt.Sprintf("%T", err)))
 	}
 
-	logger := w.logger.With(slog.Int64("message_id", c.ID), slog.Int(telemetry.LogAttempt, c.Attempt))
-	if c.Tenant != "" {
-		logger = logger.With(slog.String(telemetry.LogTenantID, c.Tenant))
-	}
-	settleCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), settleTimeout)
-	defer cancel()
 	settled, serr := w.store.settle(settleCtx, st)
 	switch {
 	case serr != nil:
 		logger.ErrorContext(spanCtx, "inbox: settle", slog.Any(telemetry.LogError, serr))
 		return
 	case !settled:
-		logger.WarnContext(spanCtx, "inbox: claim lost before settle, result dropped", slog.String("outcome", outcome(st)))
+		logger.WarnContext(spanCtx, "inbox: claim lost before settle, result dropped", slog.String(telemetry.LogOutcome, string(st.outcome())))
 		return
 	}
 	w.metrics.handled.Add(ctx, 1, metric.WithAttributes(
 		telemetry.AttrSource.String(w.source),
-		telemetry.AttrOutcome.String(outcome(st)),
+		telemetry.AttrOutcome.String(string(st.outcome())),
 	))
 	w.logOutcome(spanCtx, logger, st)
 }
 
-func (w *Worker) logOutcome(ctx context.Context, logger *slog.Logger, st settlement) {
-	switch outcome(st) {
-	case outcomeRetry:
-		logger.WarnContext(ctx, "inbox: handler failed, retrying", slog.Time("retry_at", st.RetryAt), slog.String(telemetry.LogError, st.Error))
-	case string(StatusParked):
-		logger.ErrorContext(ctx, "inbox: message parked", slog.String(telemetry.LogError, st.Error))
-	case string(StatusIgnored):
-		logger.DebugContext(ctx, "inbox: message ignored", slog.String("reason", st.Error))
+// releaseOnShutdown hands back a message whose handler failed because the
+// Worker is stopping, so a rollout neither delays nor Parks it.
+func (w *Worker) releaseOnShutdown(ctx context.Context, logger *slog.Logger, c claimed) {
+	released, err := w.store.release(ctx, c)
+	switch {
+	case err != nil:
+		logger.ErrorContext(ctx, "inbox: release on shutdown", slog.Any(telemetry.LogError, err))
+	case !released:
+		logger.WarnContext(ctx, "inbox: claim lost before release on shutdown")
+	default:
+		logger.DebugContext(ctx, "inbox: released message on shutdown")
 	}
 }
 
-const outcomeRetry = "retry"
+func (w *Worker) logOutcome(ctx context.Context, logger *slog.Logger, st settlement) {
+	switch st.outcome() {
+	case outcomeRetry:
+		logger.WarnContext(ctx, "inbox: handler failed, retrying", slog.Time(telemetry.LogRetryAt, st.RetryAt), slog.String(telemetry.LogError, st.Error))
+	case outcomeParked:
+		logger.ErrorContext(ctx, "inbox: message parked", slog.String(telemetry.LogError, st.Error))
+	case outcomeIgnored:
+		logger.DebugContext(ctx, "inbox: message ignored", slog.String(telemetry.LogReason, st.Error))
+	}
+}
 
-func outcome(st settlement) string {
+// outcome is the eventsourcing.outcome of a settled attempt: the final
+// Status, or retry for a message that stays pending.
+type outcome string
+
+const (
+	outcomeRetry   outcome = "retry"
+	outcomeParked  outcome = outcome(StatusParked)
+	outcomeIgnored outcome = outcome(StatusIgnored)
+)
+
+func (st settlement) outcome() outcome {
 	if st.Status == StatusPending {
 		return outcomeRetry
 	}
-	return string(st.Status)
+	return outcome(st.Status)
 }
 
 // call runs the Handler with the message's context and Timeout and turns a
@@ -385,23 +429,18 @@ func (w *Worker) call(ctx context.Context, d Delivery) (err error) {
 	if d.Tenant != "" {
 		ctx = ctxutil.WithTenantID(ctx, d.Tenant)
 	}
-	ctx, cancel := context.WithTimeout(ctx, w.timeout)
-	defer cancel()
-	defer func() {
-		if r := recover(); r != nil {
-			err = &panicError{value: r}
-			w.logger.ErrorContext(ctx, "inbox: handler panic",
-				slog.Int64("message_id", d.ID),
-				slog.String(telemetry.LogError, err.Error()),
-				slog.String("stack", string(debug.Stack())))
-		}
-	}()
-	return w.handle(ctx, d)
+	err = safecall.Call(ctx, safecall.Input{Timeout: w.timeout}, func(ctx context.Context) error {
+		return w.handle(ctx, d)
+	})
+	if p := (*safecall.PanicError)(nil); errors.As(err, &p) {
+		err = fmt.Errorf("inbox: handler %w", p)
+		w.logger.ErrorContext(ctx, "inbox: handler panic",
+			slog.Int64(telemetry.LogMessageID, d.ID),
+			slog.String(telemetry.LogError, err.Error()),
+			slog.String(telemetry.LogStack, string(p.Stack)))
+	}
+	return err
 }
-
-type panicError struct{ value any }
-
-func (e *panicError) Error() string { return fmt.Sprintf("inbox: handler panic: %v", e.value) }
 
 // settlement maps a Handler result to the message's next state.
 func (w *Worker) settlement(c claimed, err error) settlement {
@@ -438,15 +477,15 @@ func storedLink(traceContext string) (trace.Link, bool) {
 	return trace.Link{SpanContext: sc}, sc.IsValid()
 }
 
-// reportGauges reports the Source's gauges every gaugeEvery while this
-// process holds the Source's telemetry lease, retrying the lease on each
-// tick until ctx ends.
+// reportGauges reports the Source's gauges while this process holds the
+// Source's telemetry lease, trying to take it every leaseRetry until ctx
+// ends.
 func (w *Worker) reportGauges(ctx context.Context) {
-	ticker := time.NewTicker(w.gaugeEvery)
+	ticker := time.NewTicker(w.leaseRetry)
 	defer ticker.Stop()
 	key := lease.Key{Namespace: w.store.channel, Name: "telemetry:" + w.source}
 	for {
-		w.reportWhileLeased(ctx, key, ticker.C)
+		w.reportWhileLeased(ctx, key)
 		select {
 		case <-ctx.Done():
 			return
@@ -455,7 +494,7 @@ func (w *Worker) reportGauges(ctx context.Context) {
 	}
 }
 
-func (w *Worker) reportWhileLeased(ctx context.Context, key lease.Key, tick <-chan time.Time) {
+func (w *Worker) reportWhileLeased(ctx context.Context, key lease.Key) {
 	leaseCtx, held, err := w.claims.TryAcquire(ctx, key)
 	if err != nil {
 		if !errors.Is(err, lease.ErrHeld) && !errors.Is(err, lease.ErrNotConnected) {
@@ -464,27 +503,10 @@ func (w *Worker) reportWhileLeased(ctx context.Context, key lease.Key, tick <-ch
 		return
 	}
 	defer held.Release()
-	for {
-		if err := w.recordGauges(leaseCtx); err != nil && leaseCtx.Err() == nil {
-			w.logger.WarnContext(ctx, "inbox: record gauges", slog.Any(telemetry.LogError, err))
-		}
-		select {
-		case <-leaseCtx.Done():
-			return
-		case <-tick:
-		}
-	}
-}
-
-func (w *Worker) recordGauges(ctx context.Context) error {
-	counts, err := w.store.counts(ctx, w.source)
-	if err != nil {
-		return err
-	}
-	source := telemetry.AttrSource.String(w.source)
-	for status, n := range counts.ByStatus {
-		w.metrics.messages.Record(ctx, n, metric.WithAttributes(source, telemetry.AttrStatus.String(string(status))))
-	}
-	w.metrics.oldestAge.Record(ctx, counts.OldestPending.Seconds(), metric.WithAttributes(source))
-	return nil
+	stop := w.metrics.observe(observeInput{
+		source: w.source,
+		counts: func(ctx context.Context) (sourceCounts, error) { return w.store.counts(ctx, w.source) },
+	})
+	defer stop()
+	<-leaseCtx.Done()
 }

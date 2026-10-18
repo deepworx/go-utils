@@ -39,7 +39,7 @@ const scope = "github.com/deepworx/go-utils/pkg/postgres/lease"
 
 const (
 	defaultPingInterval = 5 * time.Second
-	// statementTimeout bounds acquire, unlock and close statements so that a
+	// statementTimeout bounds ping, acquire, unlock and close statements so that a
 	// cancelled caller never interrupts a statement on the shared connection.
 	statementTimeout = 5 * time.Second
 )
@@ -64,16 +64,26 @@ var (
 // Key identifies a lock. Namespace groups related locks, such as all locks
 // of one package in one schema.
 type Key struct {
+	// Namespace is the first half of the lock, hashed with fnv32a.
 	Namespace string
-	Name      string
+	// Name is the second half of the lock, hashed with fnv32a. Required.
+	Name string
 }
 
+// String returns "namespace/name".
 func (k Key) String() string { return k.Namespace + "/" + k.Name }
+
+// lock is the two-int advisory lock of k. Distinct Keys can share one.
+func (k Key) lock() lockPair { return lockPair{lockID(k.Namespace), lockID(k.Name)} }
+
+// lockPair is a two-int advisory lock key.
+type lockPair [2]int32
 
 // Config configures Claims.
 type Config struct {
 	// PingInterval is how often the lock connection is checked. Lease loss
-	// is noticed at most this late. Defaults to 5s.
+	// is noticed at most this late, plus up to 5s for a ping that hangs; a
+	// slow ping is not a loss. Defaults to 5s.
 	PingInterval time.Duration
 	// Logger defaults to slog.Default().
 	Logger *slog.Logger
@@ -98,7 +108,9 @@ type Claims struct {
 
 	mu   sync.Mutex
 	conn *pgx.Conn
-	held map[Key]*Lease
+	// held is keyed by lock rather than Key: session advisory locks are
+	// re-entrant, so two Keys sharing a lock must not both acquire it.
+	held map[lockPair]*Lease
 }
 
 // NewClaims returns Claims that take their connection from pool.
@@ -122,7 +134,7 @@ func NewClaims(pool *pgxpool.Pool, cfg Config, opts ...Option) *Claims {
 		pingInterval: cfg.PingInterval,
 		logger:       cfg.Logger,
 		metrics:      m,
-		held:         make(map[Key]*Lease),
+		held:         make(map[lockPair]*Lease),
 	}
 }
 
@@ -201,7 +213,7 @@ func (c *Claims) watch(ctx context.Context, conn *pgx.Conn) error {
 func (c *Claims) ping(ctx context.Context, conn *pgx.Conn) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	pingCtx, cancel := context.WithTimeout(ctx, c.pingInterval)
+	pingCtx, cancel := context.WithTimeout(ctx, statementTimeout)
 	defer cancel()
 	if err := conn.Ping(pingCtx); err != nil {
 		return fmt.Errorf("ping lock connection: %w", err)
@@ -237,7 +249,8 @@ func (c *Claims) detach(countLost bool) {
 // is derived from ctx and is cancelled with cause ErrLost when the lease is
 // lost; Release cancels it too. It fails with ErrHeld when another session
 // or this process holds the lock, with ErrNotConnected while Run has no
-// connection, and with ErrEmptyName when key has no Name.
+// connection, and with ErrEmptyName when key has no Name. A Key whose lock
+// collides with one this process holds counts as held.
 func (c *Claims) TryAcquire(ctx context.Context, key Key) (context.Context, *Lease, error) {
 	if key.Name == "" {
 		return nil, nil, ErrEmptyName
@@ -249,14 +262,15 @@ func (c *Claims) TryAcquire(ctx context.Context, key Key) (context.Context, *Lea
 	if c.conn == nil {
 		return nil, nil, ErrNotConnected
 	}
-	if _, ok := c.held[key]; ok {
-		return nil, nil, fmt.Errorf("%w by this process: %s", ErrHeld, key)
+	lock := key.lock()
+	if holder, ok := c.held[lock]; ok {
+		return nil, nil, fmt.Errorf("%w by this process: %s (as %s)", ErrHeld, key, holder.key)
 	}
 
 	stmtCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), statementTimeout)
 	defer cancel()
 	var locked bool
-	err := c.conn.QueryRow(stmtCtx, "SELECT pg_try_advisory_lock($1, $2)", lockID(key.Namespace), lockID(key.Name)).Scan(&locked)
+	err := c.conn.QueryRow(stmtCtx, "SELECT pg_try_advisory_lock($1, $2)", lock[0], lock[1]).Scan(&locked)
 	if err != nil {
 		return nil, nil, fmt.Errorf("lease: acquire %s: %w", key, err)
 	}
@@ -266,7 +280,7 @@ func (c *Claims) TryAcquire(ctx context.Context, key Key) (context.Context, *Lea
 
 	leaseCtx, cancelLease := context.WithCancelCause(ctx)
 	l := &Lease{claims: c, key: key, cancel: cancelLease}
-	c.held[key] = l
+	c.held[lock] = l
 	c.metrics.held.Add(ctx, 1)
 	return leaseCtx, l, nil
 }
@@ -287,10 +301,11 @@ func (l *Lease) Release() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if c.held[l.key] != l {
+	lock := l.key.lock()
+	if c.held[lock] != l {
 		return
 	}
-	delete(c.held, l.key)
+	delete(c.held, lock)
 	l.cancel(nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), statementTimeout)
@@ -298,12 +313,12 @@ func (l *Lease) Release() {
 	c.metrics.held.Add(ctx, -1)
 
 	var unlocked bool
-	err := c.conn.QueryRow(ctx, "SELECT pg_advisory_unlock($1, $2)", lockID(l.key.Namespace), lockID(l.key.Name)).Scan(&unlocked)
+	err := c.conn.QueryRow(ctx, "SELECT pg_advisory_unlock($1, $2)", lock[0], lock[1]).Scan(&unlocked)
 	switch {
 	case err != nil:
-		c.logger.WarnContext(ctx, "lease: unlock", slog.String("lease", l.key.String()), slog.Any(telemetry.LogError, err))
+		c.logger.WarnContext(ctx, "lease: unlock", slog.String(telemetry.LogLease, l.key.String()), slog.Any(telemetry.LogError, err))
 	case !unlocked:
-		c.logger.WarnContext(ctx, "lease: unlock found no lock", slog.String("lease", l.key.String()))
+		c.logger.WarnContext(ctx, "lease: unlock found no lock", slog.String(telemetry.LogLease, l.key.String()))
 	}
 }
 

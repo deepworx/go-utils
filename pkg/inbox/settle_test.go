@@ -334,16 +334,18 @@ func TestNewWorkerRejectsIncompleteConfig(t *testing.T) {
 	store, _ := newStore(t)
 	handle := func(context.Context, inbox.Delivery) error { return nil }
 	tests := []struct {
-		name string
-		cfg  inbox.Config
+		name  string
+		store *inbox.Store
+		cfg   inbox.Config
 	}{
-		{name: "empty source", cfg: inbox.Config{Handle: handle}},
-		{name: "nil handle", cfg: inbox.Config{Source: "src"}},
+		{name: "nil store", cfg: inbox.Config{Source: "src", Handle: handle}},
+		{name: "empty source", store: store, cfg: inbox.Config{Handle: handle}},
+		{name: "nil handle", store: store, cfg: inbox.Config{Source: "src"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			if _, err := inbox.NewWorker(store, tt.cfg); !errors.Is(err, inbox.ErrInvalidConfig) {
+			if _, err := inbox.NewWorker(tt.store, tt.cfg); !errors.Is(err, inbox.ErrInvalidConfig) {
 				t.Errorf("NewWorker() error = %v, want ErrInvalidConfig", err)
 			}
 		})

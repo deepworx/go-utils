@@ -67,7 +67,7 @@ func (c *Consumer) Await(ctx context.Context, pos eventstore.Cursor) Freshness {
 		ctx, cancel = context.WithTimeout(ctx, awaitBudget)
 		defer cancel()
 	}
-	w := c.awaits.add(pos)
+	w := c.awaits.add(ctx, pos)
 	defer c.awaits.remove(w)
 	select {
 	case f := <-w.done:
@@ -106,13 +106,15 @@ func newPoller(p port, logger *slog.Logger) *poller {
 }
 
 // add registers an Await for pos and starts the poll loop if none runs.
-func (p *poller) add(pos eventstore.Cursor) *waiter {
+// The loop keeps the values of the first Await's ctx, such as its trace,
+// but not its cancellation: it serves every Await and ends with the last.
+func (p *poller) add(ctx context.Context, pos eventstore.Cursor) *waiter {
 	w := &waiter{pos: pos, done: make(chan Freshness, 1)}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.waiters[w] = struct{}{}
 	if p.loop == nil {
-		ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 		p.loop = &pollLoop{stop: cancel, done: make(chan struct{})}
 		go p.run(ctx, p.loop.done)
 	}

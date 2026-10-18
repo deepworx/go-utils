@@ -23,10 +23,19 @@ type Backend struct {
 	Schema string
 }
 
+// DecodeFailure is an event whose payload does not decode.
+type DecodeFailure struct {
+	// Env is the event without its decoded Event.
+	Env     eventstore.Envelope
+	Payload eventstore.Payload
+	// Err is the decode error, marked consumer.Permanent.
+	Err error
+}
+
 // DecodeFailedFunc receives an event whose payload does not decode, in
 // place of the Consumer going Stopped. ctx carries the event's Tenant and
 // Correlation. A returned error is retried like a handler error.
-type DecodeFailedFunc func(ctx context.Context, env eventstore.Envelope, payload eventstore.Payload, err error) error
+type DecodeFailedFunc func(ctx context.Context, f DecodeFailure) error
 
 // ReactorOptions are the runner behaviours only a Reactor turns on.
 type ReactorOptions struct {
@@ -99,7 +108,8 @@ func RuntimeBackend(rt any) (Backend, bool) {
 	return hooks.Backend(rt)
 }
 
-// ReactorOption returns a consumer.Option applying o; the caller asserts it.
+// ReactorOption returns a consumer.Option applying o. It is typed any
+// because this package cannot import consumer; the caller asserts it.
 func ReactorOption(o ReactorOptions) any { return hooks.ReactorOption(o) }
 
 // IsPermanent reports whether err is marked consumer.Permanent.

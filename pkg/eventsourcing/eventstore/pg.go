@@ -85,12 +85,12 @@ func newPgQueries(schema string) pgQueries {
 	}
 }
 
-// NewPgStore returns a PgStore. It fails when Pool or Codec is missing, and
-// with notify.ErrInvalidChannel when Schema makes the derived channel name
-// too long.
+// NewPgStore returns a PgStore. It fails with ErrInvalidConfig when Pool or
+// Codec is missing, and with notify.ErrInvalidChannel when Schema makes the
+// derived channel name too long.
 func NewPgStore(cfg PgStoreConfig, opts ...StoreOption) (*PgStore, error) {
 	if cfg.Pool == nil || cfg.Codec == nil {
-		return nil, errors.New("eventstore: NewPgStore: Pool and Codec are required")
+		return nil, fmt.Errorf("eventstore: NewPgStore: Pool and Codec are required: %w", ErrInvalidConfig)
 	}
 	schema, err := checkSchema(cfg.Schema)
 	if err != nil {

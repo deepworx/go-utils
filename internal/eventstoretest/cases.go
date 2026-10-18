@@ -156,9 +156,8 @@ func (s suite) loadAtAndHistory(t *testing.T) {
 	}
 	_, err = h.accounts.LoadAt(ctx, id, 4)
 	wantErr(t, err, eventstore.ErrNotFound)
-	if _, err := h.accounts.LoadAt(ctx, id, 0); err == nil {
-		t.Fatal("LoadAt(0) succeeded, want an error")
-	}
+	_, err = h.accounts.LoadAt(ctx, id, 0)
+	wantErr(t, err, eventstore.ErrInvalidVersion)
 
 	history, err := h.accounts.History(ctx, id)
 	if err != nil {
@@ -295,26 +294,33 @@ func (h harness) metadataOf(t *testing.T, ctx context.Context) (eventstore.Envel
 func (s suite) actor(t *testing.T) {
 	h := s.setup(t)
 	base := ctxutil.WithTenantID(context.Background(), "t1")
-	withUser := func(ctx context.Context, user string) context.Context {
-		return ctxutil.WithClaims(ctx, ctxutil.Claims{UserID: user})
+	user := func(id string) func(context.Context) context.Context {
+		return func(ctx context.Context) context.Context {
+			return ctxutil.WithClaims(ctx, ctxutil.Claims{UserID: id})
+		}
+	}
+	actorAndUser := func(actor, id string) func(context.Context) context.Context {
+		return func(ctx context.Context) context.Context {
+			return user(id)(ctxutil.WithActor(ctx, actor))
+		}
 	}
 
 	tests := []struct {
 		name    string
-		ctx     context.Context
+		with    func(context.Context) context.Context
 		want    string
 		wantErr error
 	}{
-		{"explicit actor wins over claims", withUser(ctxutil.WithActor(base, "system:reactor:mailer"), "user-1"), "system:reactor:mailer", nil},
-		{"claims user", withUser(base, "user-1"), "user-1", nil},
-		{"empty actor falls back to claims", withUser(ctxutil.WithActor(base, ""), "user-1"), "user-1", nil},
-		{"none", base, "", eventstore.ErrNoActor},
-		{"empty claims user", withUser(base, ""), "", eventstore.ErrNoActor},
-		{"reserved prefix in claims", withUser(base, "system:scheduler:x"), "", eventstore.ErrNoActor},
+		{"explicit actor wins over claims", actorAndUser("system:reactor:mailer", "user-1"), "system:reactor:mailer", nil},
+		{"claims user", user("user-1"), "user-1", nil},
+		{"empty actor falls back to claims", actorAndUser("", "user-1"), "user-1", nil},
+		{"none", func(ctx context.Context) context.Context { return ctx }, "", eventstore.ErrNoActor},
+		{"empty claims user", user(""), "", eventstore.ErrNoActor},
+		{"reserved prefix in claims", user("system:scheduler:x"), "", eventstore.ErrNoActor},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			env, err := h.metadataOf(t, tt.ctx)
+			env, err := h.metadataOf(t, tt.with(base))
 			if tt.wantErr != nil {
 				wantErr(t, err, tt.wantErr)
 				return
@@ -335,15 +341,19 @@ func (s suite) correlation(t *testing.T) {
 
 	tests := []struct {
 		name string
-		ctx  context.Context
+		with func(context.Context) context.Context
 		want string
 	}{
-		{"explicit correlation wins over request ID", ctxutil.WithRequestID(ctxutil.WithCorrelationID(base, "corr-1"), "req-1"), "corr-1"},
-		{"request ID", ctxutil.WithRequestID(base, "req-1"), "req-1"},
+		{"explicit correlation wins over request ID", func(ctx context.Context) context.Context {
+			return ctxutil.WithRequestID(ctxutil.WithCorrelationID(ctx, "corr-1"), "req-1")
+		}, "corr-1"},
+		{"request ID", func(ctx context.Context) context.Context {
+			return ctxutil.WithRequestID(ctx, "req-1")
+		}, "req-1"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			env, err := h.metadataOf(t, tt.ctx)
+			env, err := h.metadataOf(t, tt.with(base))
 			if err != nil {
 				t.Fatalf("Create: %v", err)
 			}
@@ -388,15 +398,15 @@ func (s suite) causation(t *testing.T) {
 
 	tests := []struct {
 		name string
-		ctx  context.Context
+		with func(context.Context) context.Context
 		want uuid.UUID
 	}{
-		{"set", ctxutil.WithCausationID(userCtx("t1"), cause), cause},
-		{"absent", userCtx("t1"), uuid.Nil},
+		{"set", func(ctx context.Context) context.Context { return ctxutil.WithCausationID(ctx, cause) }, cause},
+		{"absent", func(ctx context.Context) context.Context { return ctx }, uuid.Nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			env, err := h.metadataOf(t, tt.ctx)
+			env, err := h.metadataOf(t, tt.with(userCtx("t1")))
 			if err != nil {
 				t.Fatalf("Create: %v", err)
 			}

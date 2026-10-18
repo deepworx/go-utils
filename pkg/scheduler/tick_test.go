@@ -71,6 +71,16 @@ func TestTickRunsDailyJobOncePerBusinessDate(t *testing.T) {
 			want: []run{{"2026-03-29", utc(t, "2026-03-29T01:30:00Z")}},
 		},
 		{
+			name:      "NotBefore past the end of the spring-forward day",
+			notBefore: 23*time.Hour + 30*time.Minute,
+			ticks: []time.Time{
+				utc(t, "2026-03-29T21:29:59Z"), // 23:29:59 CEST on 03-29
+				utc(t, "2026-03-29T21:30:00Z"), // 23:30 CEST, half an hour before the 23h day ends
+				utc(t, "2026-03-29T22:30:00Z"), // 00:30 CEST on 03-30
+			},
+			want: []run{{"2026-03-29", utc(t, "2026-03-29T21:30:00Z")}},
+		},
+		{
 			name:      "fall back",
 			notBefore: 3 * time.Hour,
 			ticks: []time.Time{
@@ -137,7 +147,8 @@ func newRunningSchedulerOn(t *testing.T, pool *pgxpool.Pool, cfg scheduler.Confi
 	t.Helper()
 	claims := lease.NewClaims(pool, lease.Config{})
 	startClaims(t, claims)
-	s, err := scheduler.New(pool, claims, cfg, opts...)
+	cfg.Pool, cfg.Claims = pool, claims
+	s, err := scheduler.New(cfg, opts...)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}

@@ -338,7 +338,7 @@ when the Cursor transaction commits. On Postgres it goes out on the channel
 `<schema>.changes`. A live UI subscribes per Runtime:
 
 ```go
-sub, err := projection.Subscribe(rt) // PgRuntime: needs its Listener
+sub, err := projection.Subscribe(ctx, rt) // PgRuntime: needs its Listener
 defer sub.Close()
 for c := range sub.C() {
 	if c.Gap {
@@ -556,7 +556,7 @@ func serve(ctx context.Context, in serveInput) error {
 		Mailer:     in.Mailer,
 	})
 	if err != nil {
-		return err
+		return fmt.Errorf("app: %w", err)
 	}
 
 	inboxStore, err := inbox.NewStore(in.Pool, inbox.StoreConfig{Schema: in.Schema})
@@ -571,7 +571,7 @@ func serve(ctx context.Context, in serveInput) error {
 		return fmt.Errorf("tracker worker: %w", err)
 	}
 
-	sched, err := scheduler.New(in.Pool, claims, scheduler.Config{Schema: in.Schema, Location: time.UTC})
+	sched, err := scheduler.New(scheduler.Config{Pool: in.Pool, Claims: claims, Schema: in.Schema, Location: time.UTC})
 	if err != nil {
 		return fmt.Errorf("scheduler: %w", err)
 	}
@@ -585,6 +585,9 @@ func serve(ctx context.Context, in serveInput) error {
 	srv := &http.Server{
 		Handler:           app.Metadata(in.Tenant, mux),
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       2 * time.Minute,
 	}
 
 	g, ctx := errgroup.WithContext(ctx)

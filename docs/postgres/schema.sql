@@ -159,6 +159,10 @@ $$;
 -- The hold carries the auto-redrive schedule: redrives counts the failed
 -- auto-redrives, next_attempt_at is the next one (NULL when auto-redrive is
 -- off) and exhausted marks a spent schedule.
+-- A redrive locks the hold only to claim its head and to settle the
+-- outcome, never while it reacts: redrive_claim is the token of the redrive
+-- replaying the head and redrive_claimed_until its expiry, after which
+-- another redrive may take the head over.
 -- ---------------------------------------------------------------------------
 CREATE TABLE public.parked_streams (
     consumer        TEXT        NOT NULL,
@@ -168,6 +172,8 @@ CREATE TABLE public.parked_streams (
     redrives        INT         NOT NULL DEFAULT 0,
     next_attempt_at TIMESTAMPTZ NULL,
     exhausted       BOOLEAN     NOT NULL DEFAULT false,
+    redrive_claim         UUID        NULL,
+    redrive_claimed_until TIMESTAMPTZ NULL,
     PRIMARY KEY (consumer, tenant_id, stream_id)
 );
 
@@ -292,7 +298,7 @@ CREATE FUNCTION public.inbox_messages_notify() RETURNS trigger
     LANGUAGE plpgsql AS
 $$
 BEGIN
-    PERFORM pg_notify('public.inbox', NEW.source);
+    PERFORM pg_notify(TG_TABLE_SCHEMA || '.inbox', NEW.source);
     RETURN NULL;
 END
 $$;

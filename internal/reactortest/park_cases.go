@@ -21,6 +21,11 @@ import (
 
 var errHopeless = consumer.Permanent(errors.New("hopeless"))
 
+// brokenError is the failure of the reaction to note.
+type brokenError struct{ note string }
+
+func (e brokenError) Error() string { return e.note + " broken" }
+
 // history returns the envelopes of an order Stream of tenant.
 func (h harness) history(tenant string, id orderID) []eventstore.Envelope {
 	h.t.Helper()
@@ -353,7 +358,7 @@ func (s suite) redriveStopsAtFirstFailure(t *testing.T) {
 	var rec reactions
 	r := h.newReactor(reactor.Config{Name: "redrive_stops", Handler: script(&rec, func(_ context.Context, note string) error {
 		if _, ok := broken.Load(note); ok {
-			return consumer.Permanent(errors.New(note + " broken"))
+			return consumer.Permanent(brokenError{note: note})
 		}
 		return nil
 	})})
@@ -361,7 +366,7 @@ func (s suite) redriveStopsAtFirstFailure(t *testing.T) {
 
 	broken.Delete("fail")
 	res, err := r.Redrive(userCtx("ops"), streamOf("t1", id))
-	if err == nil || errors.Is(err, reactor.ErrNotParked) || !strings.Contains(err.Error(), "a broken") {
+	if !errors.Is(err, brokenError{note: "a"}) {
 		t.Fatalf("Redrive = %v, want the failure of a", err)
 	}
 	if res != (reactor.RedriveResult{Replayed: 1, Remaining: 2}) {
@@ -433,10 +438,7 @@ func (s suite) discard(t *testing.T) {
 		t.Errorf("parked = %+v, want none", got)
 	}
 
-	if h.backend.Discarded == nil {
-		return
-	}
-	audit, err := h.backend.Discarded(context.Background(), "discard")
+	audit, err := h.backend.Discarded(context.Background(), r)
 	if err != nil {
 		t.Fatalf("Discarded: %v", err)
 	}

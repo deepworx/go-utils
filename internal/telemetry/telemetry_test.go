@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -179,17 +180,23 @@ func TestInstrumentHelpersApplyRegistry(t *testing.T) {
 	}
 	held.Add(ctx, 1)
 
-	pending, err := telemetry.ConsumerPending.Int64Gauge(meter)
+	_, err = telemetry.ConsumerPending.Int64ObservableGauge(meter, metric.WithInt64Callback(
+		func(_ context.Context, o metric.Int64Observer) error {
+			o.Observe(7)
+			return nil
+		}))
 	if err != nil {
-		t.Fatalf("Int64Gauge: %v", err)
+		t.Fatalf("Int64ObservableGauge: %v", err)
 	}
-	pending.Record(ctx, 7)
 
-	age, err := telemetry.InboxPendingOldestAge.Float64Gauge(meter)
+	_, err = telemetry.InboxPendingOldestAge.Float64ObservableGauge(meter, metric.WithFloat64Callback(
+		func(_ context.Context, o metric.Float64Observer) error {
+			o.Observe(1.5)
+			return nil
+		}))
 	if err != nil {
-		t.Fatalf("Float64Gauge: %v", err)
+		t.Fatalf("Float64ObservableGauge: %v", err)
 	}
-	age.Record(ctx, 1.5)
 
 	var rm metricdata.ResourceMetrics
 	if err := reader.Collect(ctx, &rm); err != nil {
