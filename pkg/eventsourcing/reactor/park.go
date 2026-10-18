@@ -153,6 +153,10 @@ type parkStore interface {
 	// and returns how many events remain held. It fails with ErrRedriving
 	// when the claim was lost.
 	settleHead(ctx context.Context, in settleInput) (remaining int, err error)
+	// discard releases one held event without reacting to it. It fails
+	// with ErrRedriving while an unexpired claim exists, whichever event is
+	// named, and otherwise with ErrNotParked when the Stream does not hold
+	// the event.
 	discard(ctx context.Context, in discardInput) error
 	list(ctx context.Context, tenant string) ([]Parked, error)
 	// due lists the Streams whose auto-redrive is due at now, earliest
@@ -272,8 +276,9 @@ func (r *Reactor) redrive(ctx context.Context, in redriveInput) (res RedriveResu
 // Discard releases one held event of s without reacting to it. The event
 // stays recorded as discarded, by the Actor or user in ctx. When it was the
 // last held event, s is no longer Parked. It fails with ErrNotParked when
-// s does not hold the event, and with eventstore.ErrNoActor when ctx names
-// no one.
+// s does not hold the event, with ErrRedriving while a Redrive or
+// auto-redrive of s is in progress (whichever event is named), and with
+// eventstore.ErrNoActor when ctx names no one.
 func (r *Reactor) Discard(ctx context.Context, s Stream, eventID uuid.UUID) error {
 	by, ok := ctxutil.Actor(ctx)
 	if !ok {

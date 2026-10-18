@@ -278,3 +278,66 @@ func (s suite) redriveDoesNotBlockLiveHold(t *testing.T) {
 		t.Errorf("reacted to %v, want [fail a late]", got)
 	}
 }
+
+// discardDuringRedrive: while a Redrive's reaction to the head runs,
+// Discard of any held event fails with ErrRedriving, so the Redrive
+// replays the whole hold in order.
+func (s suite) discardDuringRedrive(t *testing.T) {
+	h := s.setup(t)
+	id := h.place(userCtx("t1"), "fail", "a")
+
+	var (
+		fixed   atomic.Bool
+		rec     reactions
+		started = make(chan struct{})
+		gate    = make(chan struct{})
+		once    sync.Once
+	)
+	r := h.newReactor(reactor.Config{Name: "discard-redriving", Handler: script(&rec, func(ctx context.Context, note string) error {
+		if !fixed.Load() {
+			return errHopeless
+		}
+		if note != "fail" {
+			return nil
+		}
+		once.Do(func() { close(started) })
+		select {
+		case <-gate:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		return nil
+	})})
+	h.drain(r)
+	fixed.Store(true)
+	history := h.history("t1", id)
+	head, next := history[0].EventID, history[1].EventID
+
+	var (
+		wg      sync.WaitGroup
+		res     reactor.RedriveResult
+		redrive error
+	)
+	wg.Go(func() { res, redrive = r.Redrive(userCtx("ops"), streamOf("t1", id)) })
+	<-started
+	discardHead := r.Discard(userCtx("ops"), streamOf("t1", id), head)
+	discardNext := r.Discard(userCtx("ops"), streamOf("t1", id), next)
+	close(gate)
+	wg.Wait()
+
+	if !errors.Is(discardHead, reactor.ErrRedriving) {
+		t.Errorf("Discard of the head during Redrive = %v, want ErrRedriving", discardHead)
+	}
+	if !errors.Is(discardNext, reactor.ErrRedriving) {
+		t.Errorf("Discard of a later event during Redrive = %v, want ErrRedriving", discardNext)
+	}
+	if redrive != nil || res != (reactor.RedriveResult{Replayed: 2}) {
+		t.Fatalf("Redrive = %+v, %v, want 2 replayed", res, redrive)
+	}
+	if got := rec.get(); !slices.Equal(got, []string{"fail", "a"}) {
+		t.Errorf("reacted to %v, want [fail a]", got)
+	}
+	if got := h.parked(r, ""); len(got) != 0 {
+		t.Errorf("parked = %+v, want none", got)
+	}
+}

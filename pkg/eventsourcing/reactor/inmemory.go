@@ -189,6 +189,9 @@ func (m *memParks) discard(_ context.Context, in discardInput) error {
 		return ErrNotParked
 	}
 	defer h.mu.Unlock()
+	if h.claimed(in.at) {
+		return ErrRedriving
+	}
 	i := slices.IndexFunc(h.events, func(e memParked) bool { return e.EventID == in.eventID })
 	if i < 0 {
 		return ErrNotParked

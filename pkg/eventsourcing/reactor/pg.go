@@ -266,7 +266,10 @@ func scanHead(row pgx.CollectableRow) (claimedHead, error) {
 }
 
 func (p *pgParks) discard(ctx context.Context, in discardInput) error {
-	return p.withHold(ctx, holdInput{stream: in.stream, now: in.at}, func(tx pgx.Tx, _ hold) error {
+	return p.withHold(ctx, holdInput{stream: in.stream, now: in.at}, func(tx pgx.Tx, h hold) error {
+		if h.claimed {
+			return ErrRedriving
+		}
 		tag, err := tx.Exec(ctx, p.queries.discard, p.name, in.stream.Tenant, in.stream.ID, in.eventID, in.at, in.by)
 		if err != nil {
 			return fmt.Errorf("mark discarded: %w", err)
