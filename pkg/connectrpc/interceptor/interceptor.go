@@ -4,7 +4,7 @@ package interceptor
 import (
 	"fmt"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"connectrpc.com/otelconnect"
 	"connectrpc.com/validate"
 
@@ -39,9 +39,10 @@ func WithRequestID(cfg requestid.Config) Option {
 	}
 }
 
-// BuildDefault creates a standard interceptor chain without authentication.
+// BuildDefault creates a standard server interceptor chain without authentication.
+// Pass the result to connect.NewServer.
 // Returns interceptors in order: recovery, deadline, requestid, otel, logging, validate, errors.
-func BuildDefault(opts ...Option) ([]connect.Interceptor, error) {
+func BuildDefault(opts ...Option) ([]connect.ServerInterceptor, error) {
 	o := &Options{}
 	for _, opt := range opts {
 		opt(o)
@@ -49,10 +50,11 @@ func BuildDefault(opts ...Option) ([]connect.Interceptor, error) {
 	return buildChain(o, nil)
 }
 
-// BuildDefaultWithAuth creates a standard interceptor chain with JWT authentication.
+// BuildDefaultWithAuth creates a standard server interceptor chain with JWT authentication.
+// Pass the result to connect.NewServer.
 // Returns interceptors in order: recovery, deadline, requestid, otel, logging, jwtauth, validate, errors.
 // Returns error if auth is nil.
-func BuildDefaultWithAuth(auth *jwtauth.Authenticator, opts ...Option) ([]connect.Interceptor, error) {
+func BuildDefaultWithAuth(auth *jwtauth.Authenticator, opts ...Option) ([]connect.ServerInterceptor, error) {
 	if auth == nil {
 		return nil, fmt.Errorf("build interceptors: authenticator is required")
 	}
@@ -63,8 +65,8 @@ func BuildDefaultWithAuth(auth *jwtauth.Authenticator, opts ...Option) ([]connec
 	return buildChain(o, auth)
 }
 
-func buildChain(o *Options, auth *jwtauth.Authenticator) ([]connect.Interceptor, error) {
-	interceptors := make([]connect.Interceptor, 0, 8)
+func buildChain(o *Options, auth *jwtauth.Authenticator) ([]connect.ServerInterceptor, error) {
+	interceptors := make([]connect.ServerInterceptor, 0, 8)
 
 	// 1. Recovery - always first, catches panics from all downstream
 	interceptors = append(interceptors, recovery.NewInterceptor())
@@ -84,7 +86,7 @@ func buildChain(o *Options, auth *jwtauth.Authenticator) ([]connect.Interceptor,
 	interceptors = append(interceptors, requestid.NewInterceptor(requestIDCfg))
 
 	// 4. OTel - captures full span including auth/validation time
-	otelInterceptor, err := otelconnect.NewInterceptor()
+	otelInterceptor, err := otelconnect.NewServerInterceptor()
 	if err != nil {
 		return nil, fmt.Errorf("create otel interceptor: %w", err)
 	}
@@ -99,7 +101,7 @@ func buildChain(o *Options, auth *jwtauth.Authenticator) ([]connect.Interceptor,
 	}
 
 	// 7. Validate - validates request payloads after auth
-	interceptors = append(interceptors, validate.NewInterceptor())
+	interceptors = append(interceptors, validate.NewServerInterceptor())
 
 	// 8. Errors - always last, maps all errors to Connect codes
 	interceptors = append(interceptors, errors.NewInterceptor())

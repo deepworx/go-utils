@@ -3,46 +3,27 @@ package recovery
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"runtime"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 )
 
-// NewInterceptor creates a Connect RPC interceptor that recovers from panics.
-// It catches panics in handlers, logs them with stack traces, and returns
-// a connect.CodeInternal error to the client. Request-scoped fields such as
-// request_id are added by slogutil.ContextHandler, not by this interceptor.
-func NewInterceptor() connect.Interceptor {
-	return &interceptor{}
-}
-
-type interceptor struct{}
-
-func (i *interceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
-	return func(ctx context.Context, req connect.AnyRequest) (resp connect.AnyResponse, err error) {
-		defer func() {
-			if r := recover(); r != nil {
-				err = recoverPanic(ctx, req.Spec().Procedure, r)
-			}
-		}()
-		return next(ctx, req)
-	}
-}
-
-func (i *interceptor) WrapStreamingClient(next connect.StreamingClientFunc) connect.StreamingClientFunc {
-	return next
-}
-
-func (i *interceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
-	return func(ctx context.Context, conn connect.StreamingHandlerConn) (err error) {
-		defer func() {
-			if r := recover(); r != nil {
-				err = recoverPanic(ctx, conn.Spec().Procedure, r)
-			}
-		}()
-		return next(ctx, conn)
+// NewInterceptor creates a Connect RPC server interceptor that recovers from
+// panics. It catches panics in handlers, logs them with stack traces, and
+// returns a connect.CodeInternal error to the client. Request-scoped fields
+// such as request_id are added by slogutil.ContextHandler, not by this
+// interceptor.
+func NewInterceptor() connect.ServerInterceptor {
+	return func(next connect.ServerFunc) connect.ServerFunc {
+		return func(ctx context.Context, spec connect.Spec, stream connect.ServerStream) (err error) {
+			defer func() {
+				if r := recover(); r != nil {
+					err = recoverPanic(ctx, spec.Procedure, r)
+				}
+			}()
+			return next(ctx, spec, stream)
+		}
 	}
 }
 
@@ -59,5 +40,5 @@ func recoverPanic(ctx context.Context, procedure string, r any) *connect.Error {
 	}
 	slog.ErrorContext(ctx, "panic recovered", attrs...)
 
-	return connect.NewError(connect.CodeInternal, errors.New("internal error"))
+	return connect.NewError(connect.CodeInternal, "internal error")
 }

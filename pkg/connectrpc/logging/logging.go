@@ -6,36 +6,20 @@ import (
 	"errors"
 	"log/slog"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 )
 
-// NewInterceptor creates a Connect RPC interceptor that logs requests and responses.
-// Successful requests are logged at Info level, errors at Warn level.
-// Request-scoped fields such as request_id and user_id are added by
+// NewInterceptor creates a Connect RPC server interceptor that logs requests
+// and responses. Successful requests are logged at Info level, errors at Warn
+// level. Request-scoped fields such as request_id and user_id are added by
 // slogutil.ContextHandler, not by this interceptor.
-func NewInterceptor() connect.Interceptor {
-	return &interceptor{}
-}
-
-type interceptor struct{}
-
-func (i *interceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
-	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-		resp, err := next(ctx, req)
-		logRequest(ctx, req.Spec().Procedure, err)
-		return resp, err
-	}
-}
-
-func (i *interceptor) WrapStreamingClient(next connect.StreamingClientFunc) connect.StreamingClientFunc {
-	return next
-}
-
-func (i *interceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
-	return func(ctx context.Context, conn connect.StreamingHandlerConn) error {
-		err := next(ctx, conn)
-		logRequest(ctx, conn.Spec().Procedure, err)
-		return err
+func NewInterceptor() connect.ServerInterceptor {
+	return func(next connect.ServerFunc) connect.ServerFunc {
+		return func(ctx context.Context, spec connect.Spec, stream connect.ServerStream) error {
+			err := next(ctx, spec, stream)
+			logRequest(ctx, spec.Procedure, err)
+			return err
+		}
 	}
 }
 
@@ -58,8 +42,7 @@ func getStatus(err error) string {
 	if err == nil {
 		return "ok"
 	}
-	var connectErr *connect.Error
-	if errors.As(err, &connectErr) {
+	if connectErr, ok := errors.AsType[*connect.Error](err); ok {
 		return connectErr.Code().String()
 	}
 	return "unknown"

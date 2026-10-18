@@ -5,7 +5,7 @@ import (
 	"context"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 )
 
 // Config holds configuration for the deadline interceptor.
@@ -28,24 +28,26 @@ func DefaultConfig() Config {
 	}
 }
 
-// NewInterceptor creates a Connect RPC interceptor that enforces deadlines.
-// It applies DefaultTimeout when no deadline exists on the incoming context,
-// and caps existing deadlines to MaxTimeout if configured.
+// NewInterceptor creates a Connect RPC server interceptor that enforces
+// deadlines on unary RPCs. It applies DefaultTimeout when no deadline exists on
+// the incoming context, and caps existing deadlines to MaxTimeout if configured.
+// Streaming RPCs are long-lived and pass through unchanged.
 //
 // Panics if:
 //   - DefaultTimeout <= 0
 //   - MaxTimeout > 0 && MaxTimeout < DefaultTimeout
-func NewInterceptor(cfg Config) connect.Interceptor {
+func NewInterceptor(cfg Config) connect.ServerInterceptor {
 	if cfg.DefaultTimeout <= 0 {
 		panic("deadline: DefaultTimeout must be positive")
 	}
 	if cfg.MaxTimeout > 0 && cfg.MaxTimeout < cfg.DefaultTimeout {
 		panic("deadline: MaxTimeout must be >= DefaultTimeout when set")
 	}
-	return &interceptor{
+	i := &interceptor{
 		defaultTimeout: cfg.DefaultTimeout,
 		maxTimeout:     cfg.MaxTimeout,
 	}
+	return i.wrap
 }
 
 type interceptor struct {
@@ -53,25 +55,17 @@ type interceptor struct {
 	maxTimeout     time.Duration
 }
 
-func (i *interceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
-	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-		if req.Spec().IsClient {
-			return next(ctx, req)
+func (i *interceptor) wrap(next connect.ServerFunc) connect.ServerFunc {
+	return func(ctx context.Context, spec connect.Spec, stream connect.ServerStream) error {
+		if spec.StreamType != connect.StreamTypeUnary {
+			return next(ctx, spec, stream)
 		}
 
 		ctx, cancel := i.applyDeadline(ctx)
 		defer cancel()
 
-		return next(ctx, req)
+		return next(ctx, spec, stream)
 	}
-}
-
-func (i *interceptor) WrapStreamingClient(next connect.StreamingClientFunc) connect.StreamingClientFunc {
-	return next
-}
-
-func (i *interceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
-	return next
 }
 
 // applyDeadline returns a context with an appropriate deadline and a cancel function.

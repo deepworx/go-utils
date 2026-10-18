@@ -7,8 +7,9 @@ import (
 	"sync"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
+	"github.com/deepworx/go-utils/internal/connecttest"
 	"github.com/deepworx/go-utils/pkg/ctxutil"
 	"github.com/deepworx/go-utils/pkg/slogutil"
 )
@@ -94,7 +95,7 @@ func TestLogRequest_Error(t *testing.T) {
 	t.Cleanup(func() { slog.SetDefault(oldLogger) })
 
 	ctx := context.Background()
-	err := connect.NewError(connect.CodeNotFound, errors.New("resource not found"))
+	err := connect.NewError(connect.CodeNotFound, "resource not found")
 
 	logRequest(ctx, "/test.Service/Get", err)
 
@@ -142,84 +143,65 @@ func TestLogRequest_UnknownError(t *testing.T) {
 	}
 }
 
-func TestInterceptor_WrapUnary(t *testing.T) {
-	mock := &mockHandler{}
-	oldLogger := slog.Default()
-	slog.SetDefault(slog.New(slogutil.NewContextHandler(mock)))
-	t.Cleanup(func() { slog.SetDefault(oldLogger) })
-
-	interceptor := NewInterceptor()
-	wrapped := interceptor.WrapUnary(func(_ context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) {
-		return &mockResponse{}, nil
-	})
-
-	ctx := ctxutil.WithRequestID(context.Background(), "unary-req")
-	req := &mockRequest{procedure: "/test.Service/Unary"}
-
-	resp, err := wrapped(ctx, req)
-
-	if err != nil {
-		t.Errorf("unexpected error: %v", err)
-	}
-	if resp == nil {
-		t.Error("expected response")
-	}
-
-	records := mock.getRecords()
-	if len(records) != 1 {
-		t.Fatalf("expected 1 log record, got %d", len(records))
-	}
-	if records[0].Level != slog.LevelInfo {
-		t.Errorf("level = %v, want %v", records[0].Level, slog.LevelInfo)
-	}
-}
-
-func TestInterceptor_WrapStreamingHandler(t *testing.T) {
-	mock := &mockHandler{}
-	oldLogger := slog.Default()
-	slog.SetDefault(slog.New(slogutil.NewContextHandler(mock)))
-	t.Cleanup(func() { slog.SetDefault(oldLogger) })
-
-	interceptor := NewInterceptor()
-	wrapped := interceptor.WrapStreamingHandler(func(_ context.Context, _ connect.StreamingHandlerConn) error {
-		return nil
-	})
-
-	ctx := context.Background()
-	conn := &mockStreamingConn{procedure: "/test.Service/Stream"}
-
-	err := wrapped(ctx, conn)
-
-	if err != nil {
-		t.Errorf("unexpected error: %v", err)
+func TestInterceptor(t *testing.T) {
+	tests := []struct {
+		name       string
+		streamType connect.StreamType
+		handlerErr error
+		wantLevel  slog.Level
+		wantStatus string
+	}{
+		{
+			name:       "unary success",
+			wantLevel:  slog.LevelInfo,
+			wantStatus: "ok",
+		},
+		{
+			name:       "streaming success",
+			streamType: connect.StreamTypeBidi,
+			wantLevel:  slog.LevelInfo,
+			wantStatus: "ok",
+		},
+		{
+			name:       "unary error",
+			handlerErr: connect.NewError(connect.CodeNotFound, "missing"),
+			wantLevel:  slog.LevelWarn,
+			wantStatus: "not_found",
+		},
 	}
 
-	records := mock.getRecords()
-	if len(records) != 1 {
-		t.Fatalf("expected 1 log record, got %d", len(records))
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mock := &mockHandler{}
+			oldLogger := slog.Default()
+			slog.SetDefault(slog.New(slogutil.NewContextHandler(mock)))
+			t.Cleanup(func() { slog.SetDefault(oldLogger) })
 
-	attrs := extractAttrs(records[0])
-	if attrs["procedure"] != "/test.Service/Stream" {
-		t.Errorf("procedure = %q, want %q", attrs["procedure"], "/test.Service/Stream")
-	}
-}
+			err := connecttest.Serve(context.Background(), connecttest.Call{
+				StreamType: tt.streamType,
+				Handler: func(context.Context, connect.Spec, connect.ServerStream) error {
+					return tt.handlerErr
+				},
+			}, NewInterceptor())
+			if !errors.Is(err, tt.handlerErr) {
+				t.Errorf("error = %v, want %v", err, tt.handlerErr)
+			}
 
-func TestInterceptor_WrapStreamingClient_PassThrough(t *testing.T) {
-	t.Parallel()
-
-	interceptor := NewInterceptor()
-	called := false
-	original := func(_ context.Context, _ connect.Spec) connect.StreamingClientConn {
-		called = true
-		return nil
-	}
-
-	wrapped := interceptor.WrapStreamingClient(original)
-	wrapped(context.Background(), connect.Spec{})
-
-	if !called {
-		t.Error("expected original function to be called")
+			records := mock.getRecords()
+			if len(records) != 1 {
+				t.Fatalf("expected 1 log record, got %d", len(records))
+			}
+			if records[0].Level != tt.wantLevel {
+				t.Errorf("level = %v, want %v", records[0].Level, tt.wantLevel)
+			}
+			attrs := extractAttrs(records[0])
+			if attrs["procedure"] != connecttest.Procedure {
+				t.Errorf("procedure = %q, want %q", attrs["procedure"], connecttest.Procedure)
+			}
+			if attrs["status"] != tt.wantStatus {
+				t.Errorf("status = %q, want %q", attrs["status"], tt.wantStatus)
+			}
+		})
 	}
 }
 
@@ -238,7 +220,7 @@ func TestGetStatus(t *testing.T) {
 		},
 		{
 			name: "connect error",
-			err:  connect.NewError(connect.CodeInvalidArgument, errors.New("bad request")),
+			err:  connect.NewError(connect.CodeInvalidArgument, "bad request"),
 			want: "invalid_argument",
 		},
 		{
@@ -277,26 +259,4 @@ func extractAttrs(r slog.Record) map[string]string {
 		return true
 	})
 	return attrs
-}
-
-type mockRequest struct {
-	connect.AnyRequest
-	procedure string
-}
-
-func (r *mockRequest) Spec() connect.Spec {
-	return connect.Spec{Procedure: r.procedure}
-}
-
-type mockResponse struct {
-	connect.AnyResponse
-}
-
-type mockStreamingConn struct {
-	connect.StreamingHandlerConn
-	procedure string
-}
-
-func (c *mockStreamingConn) Spec() connect.Spec {
-	return connect.Spec{Procedure: c.procedure}
 }

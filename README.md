@@ -185,14 +185,14 @@ nats.PushConsumeWithTracing(ctx, nats.PushConsumeInput{
 
 ### grpchealth
 
-Health check aggregator for [connectrpc.com/grpchealth](https://pkg.go.dev/connectrpc.com/grpchealth). Probes checkers in parallel, sets `StatusServing` only if all pass. Automatically registers with `shutdown` for graceful termination.
+Health check aggregator for [connectrpc.com/grpchealth/v2](https://pkg.go.dev/connectrpc.com/grpchealth/v2). Probes checkers in parallel, sets `StatusServing` only if all pass. Automatically registers with `shutdown` for graceful termination.
 
 ```go
 aggregator := grpchealth.NewAggregator(ctx, grpchealth.DefaultConfig()).
     Register("postgres", postgres.NewHealthChecker(pool)).
     Register("redis", redisChecker)
 
-mux.Handle(aggregator.Handler())
+aggregator.RegisterService(server) // server is a *connect.Server
 // Background goroutine runs automatically, stopped by shutdown.WaitForSignal()
 ```
 
@@ -243,10 +243,9 @@ auth, _ := jwtauth.NewAuthenticator(ctx, jwtauth.Config{
     },
 })
 
-mux.Handle(servicepb.NewServiceHandler(
-    &Server{},
-    connect.WithInterceptors(jwtauth.NewInterceptor(auth)),
-))
+server := connect.NewServer(jwtauth.NewInterceptor(auth))
+servicepb.RegisterServiceHandler(server, &Server{})
+connecthttp.Mount(mux, server)
 ```
 
 Claims available via `ctxutil.UserID(ctx)`, `ctxutil.Roles(ctx)`, etc.
@@ -256,13 +255,12 @@ Claims available via `ctxutil.UserID(ctx)`, `ctxutil.Roles(ctx)`, etc.
 Panic recovery interceptor. Catches panics, logs with stack trace, returns `CodeInternal`.
 
 ```go
-mux.Handle(servicepb.NewServiceHandler(
-    &Server{},
-    connect.WithInterceptors(
-        recovery.NewInterceptor(),
-        // ... other interceptors
-    ),
-))
+server := connect.NewServer(
+    recovery.NewInterceptor(),
+    // ... other interceptors
+)
+servicepb.RegisterServiceHandler(server, &Server{})
+connecthttp.Mount(mux, server)
 ```
 
 Logs include: procedure, panic value, stack trace. Request fields come from `slogutil.ContextHandler`.
@@ -272,10 +270,9 @@ Logs include: procedure, panic value, stack trace. Request fields come from `slo
 Structured request/response logging. Success at Info, errors at Warn.
 
 ```go
-mux.Handle(servicepb.NewServiceHandler(
-    &Server{},
-    connect.WithInterceptors(logging.NewInterceptor()),
-))
+server := connect.NewServer(logging.NewInterceptor())
+servicepb.RegisterServiceHandler(server, &Server{})
+connecthttp.Mount(mux, server)
 ```
 
 Log attributes: procedure, status, error (on failure). Request fields come from `slogutil.ContextHandler`.
@@ -285,12 +282,11 @@ Log attributes: procedure, status, error (on failure). Request fields come from 
 Propagates or generates request IDs. Stores in context via `ctxutil.WithRequestID`.
 
 ```go
-mux.Handle(servicepb.NewServiceHandler(
-    &Server{},
-    connect.WithInterceptors(requestid.NewInterceptor(requestid.Config{
-        HeaderName: "X-Request-ID", // default
-    })),
-))
+server := connect.NewServer(requestid.NewInterceptor(requestid.Config{
+    HeaderName: "X-Request-ID", // default
+}))
+servicepb.RegisterServiceHandler(server, &Server{})
+connecthttp.Mount(mux, server)
 ```
 
 Generated IDs are UUID v4 without hyphens (32 characters).
@@ -300,10 +296,9 @@ Generated IDs are UUID v4 without hyphens (32 characters).
 Maps errors to Connect RPC codes. Unmapped errors return `CodeInternal` with sanitized message.
 
 ```go
-mux.Handle(servicepb.NewServiceHandler(
-    &Server{},
-    connect.WithInterceptors(errors.NewInterceptor()),
-))
+server := connect.NewServer(errors.NewInterceptor())
+servicepb.RegisterServiceHandler(server, &Server{})
+connecthttp.Mount(mux, server)
 ```
 
 Implement `ConnectCoder` on errors:
@@ -327,23 +322,24 @@ Error mapping priority:
 4. `*connect.Error` → preserved
 5. Other errors → `CodeInternal` (message: "internal error")
 
-Mapped errors (1-4) preserve original message. Unmapped errors (5) hide details.
+Mapped errors (1-4) preserve original message. Unmapped errors (5) hide details; the original error stays available server-side as the cause (`errors.Is`/`errors.As`).
 
 ### connectrpc/deadline
 
-Enforces deadlines on server-side unary calls. Applies a default timeout when none exists, and caps existing deadlines to a maximum.
+Enforces deadlines on unary calls; streaming calls pass through. Applies a default timeout when none exists, and caps existing deadlines to a maximum.
 
 ```go
-mux.Handle(servicepb.NewServiceHandler(
-    &Server{},
-    connect.WithInterceptors(deadline.NewInterceptor(deadline.Config{
-        DefaultTimeout: 30 * time.Second, // applied when no deadline exists
-        MaxTimeout:     60 * time.Second, // caps existing deadlines (0 = no cap)
-    })),
-))
+server := connect.NewServer(deadline.NewInterceptor(deadline.Config{
+    DefaultTimeout: 30 * time.Second, // applied when no deadline exists
+    MaxTimeout:     60 * time.Second, // caps existing deadlines (0 = no cap)
+}))
+servicepb.RegisterServiceHandler(server, &Server{})
+connecthttp.Mount(mux, server)
 ```
 
 ### connectrpc/interceptor
+
+All `connectrpc` interceptors target [connect-go v2](https://pkg.go.dev/connectrpc.com/connect/v2) and are `connect.ServerInterceptor`s. connect-go v2 limits messages to 4 MiB by default; raise it with `connecthttp.WithReadMaxBytes` on `connecthttp.Mount`.
 
 Default interceptor chain builder. Order: recovery → deadline → requestid → otel → logging → [jwtauth] → validate → errors.
 
@@ -353,6 +349,10 @@ interceptors, _ := interceptor.BuildDefaultWithAuth(auth)          // 8 intercep
 interceptors, _ := interceptor.BuildDefault(                       // with options
     interceptor.WithDeadline(deadline.Config{DefaultTimeout: 60 * time.Second}),
 )
+
+server := connect.NewServer(interceptors...)
+servicepb.RegisterServiceHandler(server, &Server{})
+connecthttp.Mount(mux, server)
 ```
 
 ### connectrpc/tracing (via otelconnect)
@@ -366,12 +366,11 @@ go get connectrpc.com/otelconnect
 ```go
 import "connectrpc.com/otelconnect"
 
-otelInterceptor, _ := otelconnect.NewInterceptor()
+otelInterceptor, _ := otelconnect.NewServerInterceptor()
 
-mux.Handle(servicepb.NewServiceHandler(
-    &Server{},
-    connect.WithInterceptors(otelInterceptor),
-))
+server := connect.NewServer(otelInterceptor)
+servicepb.RegisterServiceHandler(server, &Server{})
+connecthttp.Mount(mux, server)
 ```
 
 Options:
@@ -389,12 +388,11 @@ go get connectrpc.com/validate
 ```go
 import "connectrpc.com/validate"
 
-validateInterceptor, _ := validate.NewInterceptor()
+validateInterceptor := validate.NewServerInterceptor()
 
-mux.Handle(servicepb.NewServiceHandler(
-    &Server{},
-    connect.WithInterceptors(validateInterceptor),
-))
+server := connect.NewServer(validateInterceptor)
+servicepb.RegisterServiceHandler(server, &Server{})
+connecthttp.Mount(mux, server)
 ```
 
 Returns `CodeInvalidArgument` with field-level violation details on validation failure.
