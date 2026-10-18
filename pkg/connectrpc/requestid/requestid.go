@@ -4,9 +4,8 @@ package requestid
 import (
 	"context"
 	"encoding/hex"
-	"net/http"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"github.com/google/uuid"
 
 	"github.com/deepworx/go-utils/internal/safeid"
@@ -26,45 +25,28 @@ func DefaultConfig() Config {
 	}
 }
 
-// NewInterceptor creates a Connect RPC interceptor that propagates or generates request IDs.
-// It extracts the request ID from the configured header, or generates a new UUID v4 if the
-// header is missing or is not 1-128 bytes of ASCII letters, digits or ".", "_", ":", "-".
-// The request ID is stored in the context via ctxutil.WithRequestID.
-func NewInterceptor(cfg Config) connect.Interceptor {
+// NewInterceptor creates a Connect RPC server interceptor that propagates or
+// generates request IDs. It extracts the request ID from the configured header,
+// or generates a new UUID v4 if the header is missing or is not 1-128 bytes of
+// ASCII letters, digits or ".", "_", ":", "-". The request ID is stored in the
+// context via ctxutil.WithRequestID.
+func NewInterceptor(cfg Config) connect.ServerInterceptor {
 	headerName := cfg.HeaderName
 	if headerName == "" {
-		headerName = "X-Request-ID"
+		headerName = DefaultConfig().HeaderName
 	}
-	return &interceptor{headerName: headerName}
-}
-
-type interceptor struct {
-	headerName string
-}
-
-func (i *interceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
-	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-		if req.Spec().IsClient {
-			return next(ctx, req)
+	return func(next connect.ServerFunc) connect.ServerFunc {
+		return func(ctx context.Context, spec connect.Spec, stream connect.ServerStream) error {
+			return next(ensureRequestID(ctx, headerName), spec, stream)
 		}
-		ctx = i.ensureRequestID(ctx, req.Header())
-		return next(ctx, req)
 	}
 }
 
-func (i *interceptor) WrapStreamingClient(next connect.StreamingClientFunc) connect.StreamingClientFunc {
-	return next
-}
-
-func (i *interceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
-	return func(ctx context.Context, conn connect.StreamingHandlerConn) error {
-		ctx = i.ensureRequestID(ctx, conn.RequestHeader())
-		return next(ctx, conn)
+func ensureRequestID(ctx context.Context, headerName string) context.Context {
+	var id string
+	if info, ok := connect.CallInfoForServerContext(ctx); ok {
+		id = info.RequestHeader().Get(headerName)
 	}
-}
-
-func (i *interceptor) ensureRequestID(ctx context.Context, headers http.Header) context.Context {
-	id := headers.Get(i.headerName)
 	if !safeid.Valid(id) {
 		id = generateID()
 	}

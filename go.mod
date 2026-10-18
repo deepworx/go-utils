@@ -3,8 +3,8 @@ module github.com/deepworx/go-utils
 go 1.27.0
 
 require (
-	connectrpc.com/connect v1.21.1
-	connectrpc.com/grpchealth v1.5.0
+	connectrpc.com/connect/v2 v2.0.1
+	connectrpc.com/grpchealth/v2 v2.0.0
 	connectrpc.com/otelconnect v0.12.0
 	connectrpc.com/validate v0.9.0
 	github.com/exaring/otelpgx v0.13.0
@@ -32,7 +32,7 @@ require (
 	buf.build/go/protovalidate v1.4.0 // indirect
 	cel.dev/cel-go v0.32.0 // indirect
 	cel.dev/expr v0.25.3 // indirect
-	connectrpc.com/connect/v2 v2.0.1 // indirect
+	connectrpc.com/connect v1.21.1 // indirect
 	dario.cat/mergo v1.0.2 // indirect
 	github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c // indirect
 	github.com/Microsoft/go-winio v0.6.2 // indirect

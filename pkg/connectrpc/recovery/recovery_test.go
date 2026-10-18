@@ -8,8 +8,9 @@ import (
 	"sync"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
+	"github.com/deepworx/go-utils/internal/connecttest"
 	"github.com/deepworx/go-utils/pkg/ctxutil"
 	"github.com/deepworx/go-utils/pkg/slogutil"
 )
@@ -142,126 +143,76 @@ func TestRecoverPanic(t *testing.T) {
 	}
 }
 
-func TestInterceptor_WrapUnary_Panic(t *testing.T) {
-	mock := &mockHandler{}
-	oldLogger := slog.Default()
-	slog.SetDefault(slog.New(slogutil.NewContextHandler(mock)))
-	t.Cleanup(func() { slog.SetDefault(oldLogger) })
-
-	interceptor := NewInterceptor()
-	wrapped := interceptor.WrapUnary(func(_ context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) {
-		panic("handler panic")
-	})
-
-	ctx := ctxutil.WithRequestID(context.Background(), "unary-req-1")
-	req := &mockRequest{procedure: "/test.Service/Unary"}
-
-	resp, err := wrapped(ctx, req)
-
-	if resp != nil {
-		t.Error("expected nil response")
-	}
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-
-	var connectErr *connect.Error
-	if !errors.As(err, &connectErr) {
-		t.Fatalf("expected connect.Error, got %T", err)
-	}
-	if connectErr.Code() != connect.CodeInternal {
-		t.Errorf("code = %v, want %v", connectErr.Code(), connect.CodeInternal)
-	}
-
-	records := mock.getRecords()
-	if len(records) != 1 {
-		t.Fatalf("expected 1 log record, got %d", len(records))
-	}
-}
-
-func TestInterceptor_WrapUnary_NoPanic(t *testing.T) {
-	mock := &mockHandler{}
-	oldLogger := slog.Default()
-	slog.SetDefault(slog.New(slogutil.NewContextHandler(mock)))
-	t.Cleanup(func() { slog.SetDefault(oldLogger) })
-
-	interceptor := NewInterceptor()
-	wrapped := interceptor.WrapUnary(func(_ context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) {
-		return &mockResponse{}, nil
-	})
-
-	ctx := context.Background()
-	req := &mockRequest{procedure: "/test.Service/Normal"}
-
-	resp, err := wrapped(ctx, req)
-
-	if err != nil {
-		t.Errorf("unexpected error: %v", err)
-	}
-	if resp == nil {
-		t.Error("expected response, got nil")
+func TestInterceptor(t *testing.T) {
+	tests := []struct {
+		name       string
+		streamType connect.StreamType
+		handler    connect.ServerFunc
+		wantCode   connect.Code
+		wantLogs   int
+	}{
+		{
+			name: "unary panic",
+			handler: func(context.Context, connect.Spec, connect.ServerStream) error {
+				panic("handler panic")
+			},
+			wantCode: connect.CodeInternal,
+			wantLogs: 1,
+		},
+		{
+			name:       "streaming panic",
+			streamType: connect.StreamTypeBidi,
+			handler: func(context.Context, connect.Spec, connect.ServerStream) error {
+				panic("streaming panic")
+			},
+			wantCode: connect.CodeInternal,
+			wantLogs: 1,
+		},
+		{
+			name: "no panic",
+			handler: func(context.Context, connect.Spec, connect.ServerStream) error {
+				return nil
+			},
+		},
 	}
 
-	records := mock.getRecords()
-	if len(records) != 0 {
-		t.Errorf("expected 0 log records, got %d", len(records))
-	}
-}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mock := &mockHandler{}
+			oldLogger := slog.Default()
+			slog.SetDefault(slog.New(slogutil.NewContextHandler(mock)))
+			t.Cleanup(func() { slog.SetDefault(oldLogger) })
 
-func TestInterceptor_WrapStreamingHandler_Panic(t *testing.T) {
-	mock := &mockHandler{}
-	oldLogger := slog.Default()
-	slog.SetDefault(slog.New(slogutil.NewContextHandler(mock)))
-	t.Cleanup(func() { slog.SetDefault(oldLogger) })
+			err := connecttest.Serve(context.Background(), connecttest.Call{
+				StreamType: tt.streamType,
+				Handler:    tt.handler,
+			}, NewInterceptor())
 
-	interceptor := NewInterceptor()
-	wrapped := interceptor.WrapStreamingHandler(func(_ context.Context, _ connect.StreamingHandlerConn) error {
-		panic("streaming panic")
-	})
+			if tt.wantCode == 0 {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+			} else {
+				var connectErr *connect.Error
+				if !errors.As(err, &connectErr) {
+					t.Fatalf("expected connect.Error, got %T", err)
+				}
+				if connectErr.Code() != tt.wantCode {
+					t.Errorf("code = %v, want %v", connectErr.Code(), tt.wantCode)
+				}
+			}
 
-	ctx := ctxutil.WithRequestID(context.Background(), "stream-req-1")
-	conn := &mockStreamingConn{procedure: "/test.Service/Stream"}
-
-	err := wrapped(ctx, conn)
-
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-
-	var connectErr *connect.Error
-	if !errors.As(err, &connectErr) {
-		t.Fatalf("expected connect.Error, got %T", err)
-	}
-	if connectErr.Code() != connect.CodeInternal {
-		t.Errorf("code = %v, want %v", connectErr.Code(), connect.CodeInternal)
-	}
-
-	records := mock.getRecords()
-	if len(records) != 1 {
-		t.Fatalf("expected 1 log record, got %d", len(records))
-	}
-
-	attrs := extractAttrs(records[0])
-	if attrs["procedure"] != "/test.Service/Stream" {
-		t.Errorf("procedure = %q, want %q", attrs["procedure"], "/test.Service/Stream")
-	}
-}
-
-func TestInterceptor_WrapStreamingClient_PassThrough(t *testing.T) {
-	t.Parallel()
-
-	interceptor := NewInterceptor()
-	called := false
-	original := func(_ context.Context, _ connect.Spec) connect.StreamingClientConn {
-		called = true
-		return nil
-	}
-
-	wrapped := interceptor.WrapStreamingClient(original)
-	wrapped(context.Background(), connect.Spec{})
-
-	if !called {
-		t.Error("expected original function to be called")
+			records := mock.getRecords()
+			if len(records) != tt.wantLogs {
+				t.Fatalf("expected %d log records, got %d", tt.wantLogs, len(records))
+			}
+			if tt.wantLogs > 0 {
+				attrs := extractAttrs(records[0])
+				if attrs["procedure"] != connecttest.Procedure {
+					t.Errorf("procedure = %q, want %q", attrs["procedure"], connecttest.Procedure)
+				}
+			}
+		})
 	}
 }
 
@@ -290,26 +241,4 @@ func extractAttrs(r slog.Record) map[string]any {
 		return true
 	})
 	return attrs
-}
-
-type mockRequest struct {
-	connect.AnyRequest
-	procedure string
-}
-
-func (r *mockRequest) Spec() connect.Spec {
-	return connect.Spec{Procedure: r.procedure}
-}
-
-type mockResponse struct {
-	connect.AnyResponse
-}
-
-type mockStreamingConn struct {
-	connect.StreamingHandlerConn
-	procedure string
-}
-
-func (c *mockStreamingConn) Spec() connect.Spec {
-	return connect.Spec{Procedure: c.procedure}
 }

@@ -6,6 +6,10 @@ import (
 	"testing"
 	"time"
 
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connectinprocess"
+	"connectrpc.com/grpchealth/v2"
+
 	"github.com/deepworx/go-utils/pkg/shutdown"
 )
 
@@ -418,20 +422,37 @@ func TestRunParallelExecution(t *testing.T) {
 	}
 }
 
-func TestHandler(t *testing.T) {
+func TestRegisterService(t *testing.T) {
 	cleanupShutdown(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	agg := NewAggregator(ctx, DefaultConfig())
+	agg := NewAggregator(ctx, Config{Interval: time.Hour, Timeout: time.Second})
+	server := connect.NewServer()
+	agg.RegisterService(server)
+	client := grpchealth.NewClient(connect.NewClient(connectinprocess.New(server)))
 
-	path, handler := agg.Handler()
-
-	if path == "" {
-		t.Error("Handler() returned empty path")
+	tests := []struct {
+		name       string
+		serving    bool
+		wantStatus grpchealth.Status
+	}{
+		{name: "serving", serving: true, wantStatus: grpchealth.StatusServing},
+		{name: "not serving", serving: false, wantStatus: grpchealth.StatusNotServing},
 	}
-	if handler == nil {
-		t.Error("Handler() returned nil handler")
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			agg.updateStatus(tt.serving, nil)
+
+			res, err := client.Check(ctx, &grpchealth.CheckRequest{})
+			if err != nil {
+				t.Fatalf("Check() error = %v", err)
+			}
+			if res.Status != tt.wantStatus {
+				t.Errorf("Status = %v, want %v", res.Status, tt.wantStatus)
+			}
+		})
 	}
 }

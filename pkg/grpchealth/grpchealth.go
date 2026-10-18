@@ -1,4 +1,4 @@
-// Package grpchealth provides a health check aggregator for connectrpc.com/grpchealth.
+// Package grpchealth provides a health check aggregator for connectrpc.com/grpchealth/v2.
 //
 // It aggregates multiple health checkers and updates a gRPC health endpoint based on
 // their combined status. All registered checkers are probed in parallel at configurable
@@ -8,12 +8,11 @@ package grpchealth
 import (
 	"context"
 	"log/slog"
-	"net/http"
 	"sync"
 	"time"
 
-	"connectrpc.com/connect"
-	"connectrpc.com/grpchealth"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/grpchealth/v2"
 
 	"github.com/deepworx/go-utils/pkg/shutdown"
 )
@@ -105,10 +104,10 @@ func (a *Aggregator) Register(name string, checker HealthChecker) *Aggregator {
 	return a
 }
 
-// Handler returns the HTTP handler for the gRPC health endpoint.
-// Mount on your HTTP mux: mux.Handle(aggregator.Handler())
-func (a *Aggregator) Handler(opts ...connect.HandlerOption) (string, http.Handler) {
-	return grpchealth.NewHandler(a.checker, opts...)
+// RegisterService registers the gRPC health-checking service on server,
+// reporting the aggregate status.
+func (a *Aggregator) RegisterService(server *connect.Server) {
+	grpchealth.Register(server, a.checker)
 }
 
 // run executes the health check loop (internal, blocking).

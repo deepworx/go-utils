@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"github.com/jwx-go/jwkfetch/v4"
 	"github.com/lestrrat-go/httprc/v3"
 	"github.com/lestrrat-go/jwx/v4/jwk"
@@ -305,55 +305,41 @@ func toStringSlice(v any) ([]string, error) {
 	}
 }
 
-// NewInterceptor creates a Connect RPC interceptor that validates JWT tokens.
-// It extracts the token from the Authorization header, validates it, and injects
-// claims into the request context using ctxutil.WithClaims.
-func NewInterceptor(auth *Authenticator) connect.Interceptor {
-	return &interceptor{auth: auth}
+// NewInterceptor creates a Connect RPC server interceptor that validates JWT
+// tokens. It extracts the token from the Authorization header, validates it,
+// and injects claims into the request context using ctxutil.WithClaims.
+func NewInterceptor(auth *Authenticator) connect.ServerInterceptor {
+	i := &interceptor{auth: auth}
+	return i.wrap
 }
 
 type interceptor struct {
 	auth *Authenticator
 }
 
-func (i *interceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
-	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-		if req.Spec().IsClient {
-			return next(ctx, req)
+func (i *interceptor) wrap(next connect.ServerFunc) connect.ServerFunc {
+	return func(ctx context.Context, spec connect.Spec, stream connect.ServerStream) error {
+		var authHeader string
+		if info, ok := connect.CallInfoForServerContext(ctx); ok {
+			authHeader = info.RequestHeader().Get("Authorization")
 		}
 
-		ctx, err := i.authenticate(ctx, req.Header())
-		if err != nil {
-			return nil, err
-		}
-
-		return next(ctx, req)
-	}
-}
-
-func (i *interceptor) WrapStreamingClient(next connect.StreamingClientFunc) connect.StreamingClientFunc {
-	return next
-}
-
-func (i *interceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
-	return func(ctx context.Context, conn connect.StreamingHandlerConn) error {
-		ctx, err := i.authenticate(ctx, conn.RequestHeader())
+		ctx, err := i.authenticate(ctx, authHeader)
 		if err != nil {
 			return err
 		}
-		return next(ctx, conn)
+		return next(ctx, spec, stream)
 	}
 }
 
-func (i *interceptor) authenticate(ctx context.Context, headers http.Header) (context.Context, error) {
-	authHeader := headers.Get("Authorization")
+func (i *interceptor) authenticate(ctx context.Context, authHeader string) (context.Context, error) {
 	if authHeader == "" {
-		return nil, connect.NewError(connect.CodeUnauthenticated, ErrMissingToken)
+		return nil, unauthenticated(ErrMissingToken)
 	}
 
 	const bearerPrefix = "Bearer "
 	if !strings.HasPrefix(authHeader, bearerPrefix) {
-		return nil, connect.NewError(connect.CodeUnauthenticated, ErrInvalidTokenFormat)
+		return nil, unauthenticated(ErrInvalidTokenFormat)
 	}
 	token := strings.TrimPrefix(authHeader, bearerPrefix)
 
@@ -372,10 +358,14 @@ func (i *interceptor) mapToConnectError(err error) *connect.Error {
 		errors.Is(err, ErrInvalidIssuer),
 		errors.Is(err, ErrInvalidAudience),
 		errors.Is(err, ErrSignatureVerification):
-		return connect.NewError(connect.CodeUnauthenticated, err)
+		return unauthenticated(err)
 	case errors.Is(err, ErrJWKSFetch):
-		return connect.NewError(connect.CodeUnavailable, err)
+		return connect.NewError(connect.CodeUnavailable, err.Error()).WithCause(err)
 	default:
-		return connect.NewError(connect.CodeUnauthenticated, err)
+		return unauthenticated(err)
 	}
+}
+
+func unauthenticated(err error) *connect.Error {
+	return connect.NewError(connect.CodeUnauthenticated, err.Error()).WithCause(err)
 }

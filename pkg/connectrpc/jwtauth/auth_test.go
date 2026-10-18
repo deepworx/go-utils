@@ -11,11 +11,12 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"github.com/lestrrat-go/jwx/v4/jwa"
 	"github.com/lestrrat-go/jwx/v4/jwk"
 	"github.com/lestrrat-go/jwx/v4/jwt"
 
+	"github.com/deepworx/go-utils/internal/connecttest"
 	"github.com/deepworx/go-utils/pkg/ctxutil"
 )
 
@@ -408,11 +409,10 @@ func TestInterceptor_Authenticate(t *testing.T) {
 		t.Fatalf("NewAuthenticator() error = %v", err)
 	}
 
-	i := NewInterceptor(auth).(*interceptor)
-
 	tests := []struct {
 		name       string
 		authHeader string
+		streamType connect.StreamType
 		wantCode   connect.Code
 		wantErr    error
 	}{
@@ -434,6 +434,12 @@ func TestInterceptor_Authenticate(t *testing.T) {
 			wantCode:   connect.CodeUnauthenticated,
 		},
 		{
+			name:       "streaming without token",
+			streamType: connect.StreamTypeBidi,
+			wantCode:   connect.CodeUnauthenticated,
+			wantErr:    ErrMissingToken,
+		},
+		{
 			name: "valid token",
 			authHeader: "Bearer " + signTestToken(t, privKey, map[string]any{
 				"iss": "test-issuer",
@@ -447,12 +453,18 @@ func TestInterceptor_Authenticate(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			headers := http.Header{}
+			call := connecttest.Call{StreamType: tt.streamType}
 			if tt.authHeader != "" {
-				headers.Set("Authorization", tt.authHeader)
+				call.Header = map[string]string{"Authorization": tt.authHeader}
+			}
+			var claims ctxutil.Claims
+			var hasClaims bool
+			call.Handler = func(ctx context.Context, _ connect.Spec, _ connect.ServerStream) error {
+				claims, hasClaims = ctxutil.GetClaims(ctx)
+				return nil
 			}
 
-			newCtx, err := i.authenticate(ctx, headers)
+			err := connecttest.Serve(ctx, call, NewInterceptor(auth))
 
 			if tt.wantErr != nil || tt.wantCode != 0 {
 				if err == nil {
@@ -472,11 +484,10 @@ func TestInterceptor_Authenticate(t *testing.T) {
 			}
 
 			if err != nil {
-				t.Fatalf("authenticate() error = %v", err)
+				t.Fatalf("Serve() error = %v", err)
 			}
 
-			claims, ok := ctxutil.GetClaims(newCtx)
-			if !ok {
+			if !hasClaims {
 				t.Fatal("claims not found in context")
 			}
 			if claims.UserID != "user-123" {

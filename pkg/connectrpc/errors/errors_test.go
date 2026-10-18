@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+
+	"github.com/deepworx/go-utils/internal/connecttest"
 )
 
 // codedError implements ConnectCoder for testing.
@@ -76,13 +78,13 @@ func TestMapError(t *testing.T) {
 		},
 		{
 			name:        "existing connect.Error",
-			err:         connect.NewError(connect.CodePermissionDenied, errors.New("access denied")),
+			err:         connect.NewError(connect.CodePermissionDenied, "access denied"),
 			wantCode:    connect.CodePermissionDenied,
 			wantMessage: "access denied",
 		},
 		{
 			name:        "wrapped connect.Error",
-			err:         fmt.Errorf("auth check: %w", connect.NewError(connect.CodeUnauthenticated, errors.New("no token"))),
+			err:         fmt.Errorf("auth check: %w", connect.NewError(connect.CodeUnauthenticated, "no token")),
 			wantCode:    connect.CodeUnauthenticated,
 			wantMessage: "no token",
 		},
@@ -112,114 +114,66 @@ func TestMapError(t *testing.T) {
 			if result.Message() != tt.wantMessage {
 				t.Errorf("message = %q, want %q", result.Message(), tt.wantMessage)
 			}
+			// A preserved *connect.Error is part of tt.err's chain; any
+			// other mapped error must keep tt.err as its cause.
+			if !errors.Is(result, tt.err) && !errors.Is(tt.err, result) {
+				t.Errorf("mapped error %v is unrelated to %v", result, tt.err)
+			}
 		})
 	}
 }
 
-func TestInterceptor_WrapUnary_Error(t *testing.T) {
+func TestInterceptor(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name        string
+		streamType  connect.StreamType
 		handlerErr  error
 		wantCode    connect.Code
 		wantMessage string
 	}{
 		{
-			name:        "ConnectCoder error",
+			name:        "unary ConnectCoder error",
 			handlerErr:  &codedError{msg: "not found", code: connect.CodeNotFound},
 			wantCode:    connect.CodeNotFound,
 			wantMessage: "not found",
 		},
 		{
-			name:        "context canceled",
+			name:        "unary context canceled",
 			handlerErr:  context.Canceled,
 			wantCode:    connect.CodeCanceled,
 			wantMessage: "context canceled",
 		},
 		{
-			name:        "unmapped error",
+			name:        "unary unmapped error",
 			handlerErr:  errors.New("internal failure"),
 			wantCode:    connect.CodeInternal,
 			wantMessage: "internal error",
 		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			interceptor := NewInterceptor()
-			wrapped := interceptor.WrapUnary(func(_ context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) {
-				return nil, tt.handlerErr
-			})
-
-			req := &mockRequest{procedure: "/test.Service/Method"}
-			_, err := wrapped(context.Background(), req)
-
-			if err == nil {
-				t.Fatal("expected error, got nil")
-			}
-
-			var connectErr *connect.Error
-			if !errors.As(err, &connectErr) {
-				t.Fatalf("expected connect.Error, got %T", err)
-			}
-			if connectErr.Code() != tt.wantCode {
-				t.Errorf("code = %v, want %v", connectErr.Code(), tt.wantCode)
-			}
-			if connectErr.Message() != tt.wantMessage {
-				t.Errorf("message = %q, want %q", connectErr.Message(), tt.wantMessage)
-			}
-		})
-	}
-}
-
-func TestInterceptor_WrapUnary_NoError(t *testing.T) {
-	t.Parallel()
-
-	interceptor := NewInterceptor()
-	wrapped := interceptor.WrapUnary(func(_ context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) {
-		return &mockResponse{}, nil
-	})
-
-	req := &mockRequest{procedure: "/test.Service/Method"}
-	resp, err := wrapped(context.Background(), req)
-
-	if err != nil {
-		t.Errorf("unexpected error: %v", err)
-	}
-	if resp == nil {
-		t.Error("expected response, got nil")
-	}
-}
-
-func TestInterceptor_WrapStreamingHandler_Error(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name        string
-		handlerErr  error
-		wantCode    connect.Code
-		wantMessage string
-	}{
 		{
-			name:        "ConnectCoder error",
+			name:        "streaming ConnectCoder error",
+			streamType:  connect.StreamTypeBidi,
 			handlerErr:  &codedError{msg: "already exists", code: connect.CodeAlreadyExists},
 			wantCode:    connect.CodeAlreadyExists,
 			wantMessage: "already exists",
 		},
 		{
-			name:        "deadline exceeded",
+			name:        "streaming deadline exceeded",
+			streamType:  connect.StreamTypeServer,
 			handlerErr:  context.DeadlineExceeded,
 			wantCode:    connect.CodeDeadlineExceeded,
 			wantMessage: "context deadline exceeded",
 		},
 		{
-			name:        "unmapped error",
+			name:        "streaming unmapped error",
+			streamType:  connect.StreamTypeClient,
 			handlerErr:  errors.New("stream error"),
 			wantCode:    connect.CodeInternal,
 			wantMessage: "internal error",
+		},
+		{
+			name: "no error",
 		},
 	}
 
@@ -227,16 +181,18 @@ func TestInterceptor_WrapStreamingHandler_Error(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			interceptor := NewInterceptor()
-			wrapped := interceptor.WrapStreamingHandler(func(_ context.Context, _ connect.StreamingHandlerConn) error {
-				return tt.handlerErr
-			})
+			err := connecttest.Serve(context.Background(), connecttest.Call{
+				StreamType: tt.streamType,
+				Handler: func(context.Context, connect.Spec, connect.ServerStream) error {
+					return tt.handlerErr
+				},
+			}, NewInterceptor())
 
-			conn := &mockStreamingConn{procedure: "/test.Service/Stream"}
-			err := wrapped(context.Background(), conn)
-
-			if err == nil {
-				t.Fatal("expected error, got nil")
+			if tt.handlerErr == nil {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
 			}
 
 			var connectErr *connect.Error
@@ -251,60 +207,4 @@ func TestInterceptor_WrapStreamingHandler_Error(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestInterceptor_WrapStreamingHandler_NoError(t *testing.T) {
-	t.Parallel()
-
-	interceptor := NewInterceptor()
-	wrapped := interceptor.WrapStreamingHandler(func(_ context.Context, _ connect.StreamingHandlerConn) error {
-		return nil
-	})
-
-	conn := &mockStreamingConn{procedure: "/test.Service/Stream"}
-	err := wrapped(context.Background(), conn)
-
-	if err != nil {
-		t.Errorf("unexpected error: %v", err)
-	}
-}
-
-func TestInterceptor_WrapStreamingClient_PassThrough(t *testing.T) {
-	t.Parallel()
-
-	interceptor := NewInterceptor()
-	called := false
-	original := func(_ context.Context, _ connect.Spec) connect.StreamingClientConn {
-		called = true
-		return nil
-	}
-
-	wrapped := interceptor.WrapStreamingClient(original)
-	wrapped(context.Background(), connect.Spec{})
-
-	if !called {
-		t.Error("expected original function to be called")
-	}
-}
-
-type mockRequest struct {
-	connect.AnyRequest
-	procedure string
-}
-
-func (r *mockRequest) Spec() connect.Spec {
-	return connect.Spec{Procedure: r.procedure}
-}
-
-type mockResponse struct {
-	connect.AnyResponse
-}
-
-type mockStreamingConn struct {
-	connect.StreamingHandlerConn
-	procedure string
-}
-
-func (c *mockStreamingConn) Spec() connect.Spec {
-	return connect.Spec{Procedure: c.procedure}
 }
