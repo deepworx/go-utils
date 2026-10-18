@@ -9,10 +9,11 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/jwx-go/jwkfetch/v4"
 	"github.com/lestrrat-go/httprc/v3"
-	"github.com/lestrrat-go/jwx/v3/jwk"
-	"github.com/lestrrat-go/jwx/v3/jws"
-	"github.com/lestrrat-go/jwx/v3/jwt"
+	"github.com/lestrrat-go/jwx/v4/jwk"
+	"github.com/lestrrat-go/jwx/v4/jws"
+	"github.com/lestrrat-go/jwx/v4/jwt"
 
 	"github.com/deepworx/go-utils/pkg/ctxutil"
 	"github.com/deepworx/go-utils/pkg/tracing"
@@ -93,7 +94,7 @@ func (c Config) Validate() error {
 
 // Authenticator validates JWT tokens and extracts claims.
 type Authenticator struct {
-	cache                 *jwk.Cache
+	cache                 *jwkfetch.Cache
 	jwksURL               string
 	issuer                string
 	audience              string
@@ -132,7 +133,7 @@ func NewAuthenticator(ctx context.Context, cfg Config) (*Authenticator, error) {
 		Timeout: httpTimeout,
 	}
 
-	cache, err := jwk.NewCache(ctx, httprc.NewClient(
+	cache, err := jwkfetch.NewCache(ctx, httprc.NewClient(
 		httprc.WithHTTPClient(httpClient),
 	))
 	if err != nil {
@@ -198,16 +199,16 @@ func (a *Authenticator) Authenticate(ctx context.Context, token string) (ctxutil
 }
 
 func (a *Authenticator) mapJWTError(err error) error {
-	if errors.Is(err, jwt.TokenExpiredError()) {
+	if errors.Is(err, jwt.TokenExpiredError{}) {
 		return fmt.Errorf("validate token: %w", ErrTokenExpired)
 	}
-	if errors.Is(err, jwt.TokenNotYetValidError()) {
+	if errors.Is(err, jwt.TokenNotYetValidError{}) {
 		return fmt.Errorf("validate token: %w", ErrTokenNotYetValid)
 	}
-	if errors.Is(err, jwt.InvalidIssuerError()) {
+	if errors.Is(err, jwt.InvalidIssuerError{}) {
 		return fmt.Errorf("validate token: %w", ErrInvalidIssuer)
 	}
-	if errors.Is(err, jwt.InvalidAudienceError()) {
+	if errors.Is(err, jwt.InvalidAudienceError{}) {
 		return fmt.Errorf("validate token: %w", ErrInvalidAudience)
 	}
 
@@ -265,8 +266,8 @@ func getNestedClaim(tok jwt.Token, path string) (any, bool) {
 
 	parts := strings.Split(path, ".")
 
-	var current any
-	if err := tok.Get(parts[0], &current); err != nil {
+	current, ok := tok.Field(parts[0])
+	if !ok {
 		return nil, false
 	}
 
