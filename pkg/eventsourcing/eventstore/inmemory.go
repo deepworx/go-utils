@@ -191,6 +191,29 @@ func (s *InMemoryStore) recordCommand(ctx context.Context, tx *commandTx, cmd pr
 	return nil
 }
 
+// CleanupCommands deletes the committed Command IDs recorded before the
+// cutoff, for all Tenants. A repeat of a deleted Command ID runs as a new command.
+func (s *InMemoryStore) CleanupCommands(_ context.Context, before time.Time) (int64, error) {
+	return s.log.cleanupCommands(before), nil
+}
+
+func (s *InMemoryStore) now() time.Time { return s.clock() }
+
+// cleanupCommands deletes the committed commands recorded before the cutoff
+// and returns how many it deleted.
+func (l *memLog) cleanupCommands(before time.Time) int64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var deleted int64
+	for k, c := range l.commands {
+		if c.recordedAt.Before(before) {
+			delete(l.commands, k)
+			deleted++
+		}
+	}
+	return deleted
+}
+
 // findCommand returns the committed command under k, or the one pending in
 // tx.
 func (l *memLog) findCommand(tx *commandTx, k commandKey) (processedCommand, bool) {

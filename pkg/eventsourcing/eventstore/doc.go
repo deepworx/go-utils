@@ -27,7 +27,9 @@
 //
 // A client that may resend a command, such as an offline mobile app, passes
 // WithCommandID: a repeat returns the original CommandResult with Replayed
-// set instead of running again (ADR-0012).
+// set instead of running again (ADR-0012). CommandCleanupJob deletes Command
+// IDs after a retention (30 days by default), which bounds how long a
+// client may buffer a command.
 //
 // In production the same Repository runs on Postgres (the events and
 // processed_commands tables of docs/postgres/schema.sql) with NewPgStore

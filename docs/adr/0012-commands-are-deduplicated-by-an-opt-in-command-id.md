@@ -21,7 +21,7 @@ ADR-0007 still holds for everything the event log drives: Reactors stay at-least
 
 ## Consequences
 
-- `docs/postgres/schema.sql` gains `processed_commands` with an index on `recorded_at`; `recorded_at` comes from the store clock (`WithClock`). The service owns the cleanup, and a repeat after cleanup runs the command again.
+- `docs/postgres/schema.sql` gains `processed_commands` with an index on `recorded_at`; `recorded_at` comes from the store clock (`WithClock`). The service schedules the cleanup (`CommandCleanupJob`, default retention 30 days), and a repeat after cleanup runs the command again, so the retention bounds how long a client may buffer a command.
 - `CommandOption` replaces `UpdateOption`, and `Create` accepts it too. `ExpectVersion` is a `CommandOption`; `Create` ignores it, since it always expects an empty Stream.
 - A deduplicated command costs one lookup and one insert in its Command transaction.
 - Out of scope: a delta read API (clients read projection snapshots with their Version), a client-supplied event time (it stays in the payload, ADR-0010), and batch or merge helpers.

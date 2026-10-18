@@ -195,7 +195,9 @@ func (a *App) CompleteTask(ctx context.Context, id todo.TaskID) (eventstore.Comm
 - A client that may resend a command after a lost response passes
   `eventstore.WithCommandID(id)` with a UUID it chose. A repeat returns the
   original result with `Replayed` set and does not run `fn` again
-  (ADR-0012).
+  (ADR-0012). `eventstore.CommandCleanupJob(store, retention)` deletes
+  Command IDs daily (default retention 30 days); a repeat after that runs
+  as a new command, so clients must not resend older commands.
 - Writers to one Stream are serialized from the load until the commit. On
   Postgres this uses a transaction-scoped advisory lock.
 - Guard (`pkg/postgres/guard`) and numbering (`pkg/postgres/numbering`) calls
@@ -581,6 +583,9 @@ func serve(ctx context.Context, in serveInput) error {
 	}
 	if err := sched.Register(inbox.CleanupJob(inboxStore, 0)); err != nil {
 		return fmt.Errorf("register inbox cleanup: %w", err)
+	}
+	if err := sched.Register(eventstore.CommandCleanupJob(store, 0)); err != nil {
+		return fmt.Errorf("register command cleanup: %w", err)
 	}
 
 	mux := http.NewServeMux()

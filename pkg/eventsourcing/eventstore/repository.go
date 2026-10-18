@@ -228,15 +228,15 @@ func (r *Repository[I, A, P]) command(ctx context.Context, call commandCall[I]) 
 	tenant, _ := ctxutil.TenantID(ctx)
 	stream := uuid.UUID(call.id)
 	cmd := commandInput{name: call.span, tenant: tenant, stream: stream.String()}
-	var res CommandResult
-	err := r.inst.command(ctx, cmd, func(ctx context.Context) error {
-		return r.uow.Within(ctx, stream, func(ctx context.Context) error {
+	return r.inst.command(ctx, cmd, func(ctx context.Context) (CommandResult, error) {
+		var res CommandResult
+		err := r.uow.Within(ctx, stream, func(ctx context.Context) error {
 			var err error
 			res, err = r.deduplicated(ctx, call)
 			return err
 		})
+		return res, err
 	})
-	return res, err
 }
 
 // deduplicated runs call.fn unless its Command ID is already recorded for the

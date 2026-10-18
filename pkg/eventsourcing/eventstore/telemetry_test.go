@@ -141,27 +141,119 @@ func TestCommandSpans(t *testing.T) {
 
 func TestCommandSpanRecordsErrorType(t *testing.T) {
 	t.Parallel()
-	rec, tp := newRecorder(t)
-	repo, _ := newInMemoryTaskRepository(eventstore.WithTracerProvider(tp))
-	ctx := userCtx("t1")
-	id := newTaskID()
-	if _, err := repo.Create(ctx, id, createTask("a")); err != nil {
-		t.Fatalf("Create: %v", err)
+	tests := []struct {
+		name    string
+		run     func(ctx context.Context, repo *taskRepository) error
+		want    error
+		errType string
+	}{
+		{
+			name: "already exists",
+			run: func(ctx context.Context, repo *taskRepository) error {
+				id := newTaskID()
+				if _, err := repo.Create(ctx, id, createTask("a")); err != nil {
+					return err
+				}
+				_, err := repo.Create(ctx, id, createTask("b"))
+				return err
+			},
+			want:    eventstore.ErrAlreadyExists,
+			errType: "already_exists",
+		},
+		{
+			name: "command id reused",
+			run: func(ctx context.Context, repo *taskRepository) error {
+				cmd := eventstore.WithCommandID(uuid.New())
+				if _, err := repo.Create(ctx, newTaskID(), createTask("a"), cmd); err != nil {
+					return err
+				}
+				_, err := repo.Create(ctx, newTaskID(), createTask("b"), cmd)
+				return err
+			},
+			want:    eventstore.ErrCommandIDReused,
+			errType: "command_id_reused",
+		},
 	}
-	if _, err := repo.Create(ctx, id, createTask("b")); !errors.Is(err, eventstore.ErrAlreadyExists) {
-		t.Fatalf("second Create: err = %v, want ErrAlreadyExists", err)
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			rec, tp := newRecorder(t)
+			repo, _ := newInMemoryTaskRepository(eventstore.WithTracerProvider(tp))
+			if err := tt.run(userCtx("t1"), repo); !errors.Is(err, tt.want) {
+				t.Fatalf("err = %v, want %v", err, tt.want)
+			}
 
-	spans := rec.Ended()
-	failed := spans[len(spans)-1]
-	if failed.Name() != "create Test.Task" {
-		t.Fatalf("last span = %q, want create Test.Task", failed.Name())
+			spans := rec.Ended()
+			failed := spans[len(spans)-1]
+			if failed.Name() != "create Test.Task" {
+				t.Fatalf("last span = %q, want create Test.Task", failed.Name())
+			}
+			if failed.Status().Code != codes.Error {
+				t.Errorf("status = %v, want error", failed.Status().Code)
+			}
+			if got, _ := attrValue(failed, "error.type"); got.AsString() != tt.errType {
+				t.Errorf("error.type = %q, want %s", got.AsString(), tt.errType)
+			}
+		})
 	}
-	if failed.Status().Code != codes.Error {
-		t.Errorf("status = %v, want error", failed.Status().Code)
+}
+
+func TestCommandSpanMarksReplay(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		existed bool
+		run     func(ctx context.Context, repo *taskRepository, id taskID, cmd eventstore.CommandOption) error
+		span    string
+	}{
+		{
+			name: "create",
+			run: func(ctx context.Context, repo *taskRepository, id taskID, cmd eventstore.CommandOption) error {
+				_, err := repo.Create(ctx, id, createTask("a"), cmd)
+				return err
+			},
+			span: "create Test.Task",
+		},
+		{
+			name:    "update",
+			existed: true,
+			run: func(ctx context.Context, repo *taskRepository, id taskID, cmd eventstore.CommandOption) error {
+				_, err := repo.Update(ctx, id, renameTask("b"), cmd)
+				return err
+			},
+			span: "update Test.Task",
+		},
 	}
-	if got, _ := attrValue(failed, "error.type"); got.AsString() != "already_exists" {
-		t.Errorf("error.type = %q, want already_exists", got.AsString())
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			rec, tp := newRecorder(t)
+			repo, _ := newInMemoryTaskRepository(eventstore.WithTracerProvider(tp))
+			ctx := userCtx("t1")
+			id := newTaskID()
+			if tt.existed {
+				if _, err := repo.Create(ctx, id, createTask("a")); err != nil {
+					t.Fatalf("Create: %v", err)
+				}
+			}
+			cmd := eventstore.WithCommandID(uuid.New())
+			for range 2 {
+				if err := tt.run(ctx, repo, id, cmd); err != nil {
+					t.Fatalf("command: %v", err)
+				}
+			}
+
+			var replayed []bool
+			for _, s := range rec.Ended() {
+				if s.Name() == tt.span {
+					v, ok := attrValue(s, "eventsourcing.command.replayed")
+					replayed = append(replayed, ok && v.AsBool())
+				}
+			}
+			if !slices.Equal(replayed, []bool{false, true}) {
+				t.Errorf("replayed on %s spans = %v, want only on the repeat", tt.span, replayed)
+			}
+		})
 	}
 }
 
@@ -308,7 +400,7 @@ func TestNoopWithoutProviders(t *testing.T) {
 	}
 }
 
-func TestHistogramsAreLabelledByStreamTypeOnly(t *testing.T) {
+func TestHistogramLabels(t *testing.T) {
 	t.Parallel()
 	reader := sdkmetric.NewManualReader()
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
@@ -320,8 +412,11 @@ func TestHistogramsAreLabelledByStreamTypeOnly(t *testing.T) {
 	if _, err := repo.Create(ctx, id, createTask("a")); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	if _, err := repo.Update(ctx, id, renameTask("b")); err != nil {
-		t.Fatalf("Update: %v", err)
+	cmd := eventstore.WithCommandID(uuid.New())
+	for range 2 {
+		if _, err := repo.Update(ctx, id, renameTask("b"), cmd); err != nil {
+			t.Fatalf("Update: %v", err)
+		}
 	}
 	if _, err := repo.Load(ctx, id); err != nil {
 		t.Fatalf("Load: %v", err)
@@ -331,17 +426,27 @@ func TestHistogramsAreLabelledByStreamTypeOnly(t *testing.T) {
 	if err := reader.Collect(t.Context(), &rm); err != nil {
 		t.Fatalf("Collect: %v", err)
 	}
+	type series struct {
+		name     string
+		replayed string
+	}
 	type summary struct {
 		count uint64
 		sum   int64
 	}
-	got := map[string]summary{}
+	got := map[series]summary{}
 	add := func(name string, attrs attribute.Set, count uint64, sum int64) {
-		want := attribute.NewSet(attribute.String("eventsourcing.stream_type", "Test.Task"))
-		if !attrs.Equals(&want) {
-			t.Errorf("%s labels = %v, want only the stream type", name, attrs.ToSlice())
+		streamType, _ := attrs.Value("eventsourcing.stream_type")
+		replayed, hasReplayed := attrs.Value("eventsourcing.command.replayed")
+		wantLen := 1
+		if hasReplayed {
+			wantLen = 2
 		}
-		got[name] = summary{count: got[name].count + count, sum: got[name].sum + sum}
+		if streamType.AsString() != "Test.Task" || attrs.Len() != wantLen {
+			t.Errorf("%s labels = %v, want the stream type and at most replayed", name, attrs.ToSlice())
+		}
+		k := series{name: name, replayed: replayed.String()}
+		got[k] = summary{count: got[k].count + count, sum: got[k].sum + sum}
 	}
 	for _, sm := range rm.ScopeMetrics {
 		for _, m := range sm.Metrics {
@@ -358,14 +463,19 @@ func TestHistogramsAreLabelledByStreamTypeOnly(t *testing.T) {
 		}
 	}
 
-	want := map[string]summary{
-		"eventsourcing.command.duration":        {count: 2},
-		"eventsourcing.aggregate.load.duration": {count: 2},
-		"eventsourcing.aggregate.load.events":   {count: 2, sum: 1 + 3},
+	// The repeated Update replays without loading the Aggregate.
+	want := map[series]summary{
+		{name: "eventsourcing.command.duration", replayed: "false"}: {count: 2},
+		{name: "eventsourcing.command.duration", replayed: "true"}:  {count: 1},
+		{name: "eventsourcing.aggregate.load.duration"}:             {count: 2},
+		{name: "eventsourcing.aggregate.load.events"}:               {count: 2, sum: 1 + 3},
 	}
-	for name, w := range want {
-		if got[name] != w {
-			t.Errorf("%s = %+v, want %+v", name, got[name], w)
+	if len(got) != len(want) {
+		t.Errorf("series = %v, want %v", got, want)
+	}
+	for k, w := range want {
+		if got[k] != w {
+			t.Errorf("%+v = %+v, want %+v", k, got[k], w)
 		}
 	}
 }

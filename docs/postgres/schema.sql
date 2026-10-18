@@ -87,7 +87,7 @@ CREATE TRIGGER events_notify
 -- (ADR-0012), written in the Command transaction. A row holds the Stream
 -- the command changed and its result: the Cursor of its last event (0, 0
 -- when it raised none) and the Aggregate version after it. recorded_at is
--- set by the store clock; the service owns the cleanup.
+-- set by the store clock; eventstore.CommandCleanupJob deletes old rows.
 -- ---------------------------------------------------------------------------
 CREATE TABLE public.processed_commands (
     tenant_id      TEXT        NOT NULL,

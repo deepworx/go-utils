@@ -39,11 +39,14 @@ func WithMeterProvider(mp metric.MeterProvider) RepositoryOption {
 }
 
 // instruments records the spans and histograms of one Repository. Metric
-// attributes are limited to the stream type.
+// attributes are limited to the stream type, and whether a Command was
+// replayed.
 type instruments struct {
 	tracer          trace.Tracer
 	streamType      string
 	labels          metric.MeasurementOption
+	commandLabels   metric.MeasurementOption
+	replayedLabels  metric.MeasurementOption
 	loadDuration    metric.Float64Histogram
 	loadEvents      metric.Int64Histogram
 	commandDuration metric.Float64Histogram
@@ -58,6 +61,8 @@ func newInstruments(providers telemetry.Providers, streamType string) instrument
 		tracer:          providers.Tracer(scope),
 		streamType:      streamType,
 		labels:          metric.WithAttributeSet(attribute.NewSet(telemetry.AttrStreamType.String(streamType))),
+		commandLabels:   commandLabels(streamType, false),
+		replayedLabels:  commandLabels(streamType, true),
 		loadDuration:    noop.Float64Histogram{},
 		loadEvents:      noop.Int64Histogram{},
 		commandDuration: noop.Float64Histogram{},
@@ -84,6 +89,13 @@ func newInstruments(providers telemetry.Providers, streamType string) instrument
 	return in
 }
 
+func commandLabels(streamType string, replayed bool) metric.MeasurementOption {
+	return metric.WithAttributeSet(attribute.NewSet(
+		telemetry.AttrStreamType.String(streamType),
+		telemetry.AttrCommandReplayed.Bool(replayed),
+	))
+}
+
 type commandInput struct {
 	// name is the span name, SpanCreate or SpanUpdate.
 	name   string
@@ -91,8 +103,9 @@ type commandInput struct {
 	stream string
 }
 
-// command runs fn in an INTERNAL Command span and records its duration.
-func (in instruments) command(ctx context.Context, cmd commandInput, fn func(ctx context.Context) error) error {
+// command runs fn in an INTERNAL Command span and records its duration. A
+// replayed result marks the span.
+func (in instruments) command(ctx context.Context, cmd commandInput, fn func(ctx context.Context) (CommandResult, error)) (CommandResult, error) {
 	start := time.Now()
 	ctx, span := in.tracer.Start(ctx, cmd.name,
 		trace.WithSpanKind(trace.SpanKindInternal),
@@ -103,10 +116,15 @@ func (in instruments) command(ctx context.Context, cmd commandInput, fn func(ctx
 		),
 	)
 	defer span.End()
-	err := fn(ctx)
-	in.commandDuration.Record(ctx, time.Since(start).Seconds(), in.labels)
+	res, err := fn(ctx)
+	labels := in.commandLabels
+	if res.Replayed {
+		labels = in.replayedLabels
+		span.SetAttributes(telemetry.AttrCommandReplayed.Bool(true))
+	}
+	in.commandDuration.Record(ctx, time.Since(start).Seconds(), labels)
 	endWithError(span, err)
-	return err
+	return res, err
 }
 
 // raising annotates the Command span in ctx with the types of the events
@@ -173,6 +191,7 @@ var errorTypes = []struct {
 	name string
 }{
 	{ErrConcurrencyConflict, "concurrency_conflict"},
+	{ErrCommandIDReused, "command_id_reused"},
 	{ErrAlreadyExists, "already_exists"},
 	{ErrNotFound, "not_found"},
 	{ErrStreamMismatch, "stream_mismatch"},

@@ -88,6 +88,8 @@ func Run(t *testing.T, newBackend func(t *testing.T) Backend) {
 		{"CommandID/Concurrent", s.commandIDConcurrent},
 		{"CommandID/ConcurrentOnOtherStream", s.commandIDConcurrentOnOtherStream},
 		{"CommandID/InOneTransaction", s.commandIDInOneTransaction},
+		{"CommandID/Cleanup", s.cleanupCommands},
+		{"CommandID/CleanupJob", s.commandCleanupJob},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -112,8 +114,13 @@ type harness struct {
 
 func (s suite) setup(t *testing.T) harness {
 	t.Helper()
+	return s.setupWithClock(t, func() time.Time { return epoch })
+}
+
+func (s suite) setupWithClock(t *testing.T, clock func() time.Time) harness {
+	t.Helper()
 	b := s.newBackend(t)
-	store := b.Store(StoreConfig{Codec: newCodec(), Clock: func() time.Time { return epoch }})
+	store := b.Store(StoreConfig{Codec: newCodec(), Clock: clock})
 	cfg := eventstore.RepositoryConfig{Store: store, UnitOfWork: b.UnitOfWork}
 	return harness{
 		backend:  b,

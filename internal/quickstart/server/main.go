@@ -132,6 +132,9 @@ func serve(ctx context.Context, in serveInput) error {
 	if err := sched.Register(inbox.CleanupJob(inboxStore, 0)); err != nil {
 		return fmt.Errorf("register inbox cleanup: %w", err)
 	}
+	if err := sched.Register(eventstore.CommandCleanupJob(store, 0)); err != nil {
+		return fmt.Errorf("register command cleanup: %w", err)
+	}
 
 	mux := http.NewServeMux()
 	a.Routes(mux)

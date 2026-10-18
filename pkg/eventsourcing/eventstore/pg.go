@@ -64,11 +64,12 @@ type PgStore struct {
 }
 
 type pgQueries struct {
-	load          string
-	version       string
-	insert        string
-	findCommand   string
-	recordCommand string
+	load            string
+	version         string
+	insert          string
+	findCommand     string
+	recordCommand   string
+	cleanupCommands string
 }
 
 func newPgQueries(schema string) pgQueries {
@@ -94,6 +95,7 @@ func newPgQueries(schema string) pgQueries {
 			WHERE tenant_id = $1 AND command_id = $2`,
 		recordCommand: `INSERT INTO ` + commands + ` (tenant_id, command_id, stream_id, transaction_id, position, version, recorded_at)
 			VALUES ($1, $2, $3, $4::numeric::text::xid8, $5, $6, $7)`,
+		cleanupCommands: `DELETE FROM ` + commands + ` WHERE recorded_at < $1`,
 	}
 }
 
@@ -225,6 +227,19 @@ func (s *PgStore) recordCommand(ctx context.Context, tx *commandTx, cmd processe
 	}
 	return nil
 }
+
+// CleanupCommands deletes the rows of processed_commands recorded before
+// the cutoff, for all Tenants. It joins a transaction in ctx. A repeat of a
+// deleted Command ID runs as a new command.
+func (s *PgStore) CleanupCommands(ctx context.Context, before time.Time) (int64, error) {
+	tag, err := postgres.Conn(ctx, s.pool).Exec(ctx, s.queries.cleanupCommands, before)
+	if err != nil {
+		return 0, fmt.Errorf("cleanup commands before %s: %w", before.Format(time.RFC3339), err)
+	}
+	return tag.RowsAffected(), nil
+}
+
+func (s *PgStore) now() time.Time { return s.clock() }
 
 // pgBatch holds the per-event columns of an append as parallel arrays.
 type pgBatch struct {

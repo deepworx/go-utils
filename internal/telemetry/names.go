@@ -29,7 +29,8 @@ func SpanSchedulerRun(job string) string { return "scheduler.run " + job }
 
 // Span and metric attribute keys. Metric attributes are limited to
 // AttrConsumer, AttrJob, AttrSource and AttrStreamType, plus the bounded
-// AttrOutcome and AttrStatus; tenants and IDs never become metric labels.
+// AttrCommandReplayed, AttrOutcome and AttrStatus; tenants and IDs never
+// become metric labels.
 const (
 	AttrTenantID   attribute.Key = "eventsourcing.tenant_id"
 	AttrStreamType attribute.Key = "eventsourcing.stream_type"
@@ -46,6 +47,8 @@ const (
 	AttrOutcome    attribute.Key = "eventsourcing.outcome"
 	AttrStatus     attribute.Key = "eventsourcing.status"
 	AttrErrorType  attribute.Key = "error.type"
+	// AttrCommandReplayed marks a Command that repeated a Command ID.
+	AttrCommandReplayed attribute.Key = "eventsourcing.command.replayed"
 )
 
 // AttributeKeys lists every registered attribute key.
@@ -53,6 +56,7 @@ var AttributeKeys = []attribute.Key{
 	AttrTenantID, AttrStreamType, AttrStreamID, AttrEventID, AttrEventType,
 	AttrEventTypes, AttrConsumer, AttrPosition, AttrBatchSize, AttrAttempt,
 	AttrJob, AttrSource, AttrOutcome, AttrStatus, AttrErrorType,
+	AttrCommandReplayed,
 }
 
 // Log keys, the fixed slog vocabulary of every runner.

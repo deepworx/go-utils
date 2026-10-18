@@ -31,6 +31,13 @@ type Store interface {
 	// recordCommand records cmd in tx. It fails with ErrConcurrencyConflict
 	// when another transaction recorded cmd.id for the Tenant meanwhile.
 	recordCommand(ctx context.Context, tx *commandTx, cmd processedCommand) error
+	// CleanupCommands deletes the Command IDs of all Tenants recorded before
+	// the cutoff and returns how many it deleted. A repeat of a deleted Command
+	// ID runs as a new command, so the retention bounds how long a client
+	// may buffer and resend a command.
+	CleanupCommands(ctx context.Context, before time.Time) (int64, error)
+	// now reads the store clock (WithClock).
+	now() time.Time
 }
 
 // processedCommand is a command that ran under a Command ID: the Stream it
