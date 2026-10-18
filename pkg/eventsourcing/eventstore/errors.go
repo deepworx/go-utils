@@ -22,8 +22,8 @@ var (
 	ErrAlreadyExists = errors.New("eventstore: stream already exists")
 	// ErrConcurrencyConflict reports a stale Expected version, a Save of an
 	// Aggregate whose Stream moved on since it was loaded, or a Command ID
-	// recorded concurrently by a command on another Stream. A retry gets
-	// the definite answer.
+	// recorded concurrently, by a command on another Stream or by a nested
+	// command in the same transaction. A retry gets the definite answer.
 	ErrConcurrencyConflict = errors.New("eventstore: concurrency conflict")
 	// ErrCommandIDReused reports a Command ID that the Tenant already used
 	// for a command on another Stream.

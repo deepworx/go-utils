@@ -16,7 +16,9 @@ import (
 // InMemoryStore is an event log in memory, for prototypes and tests. Like
 // the Postgres store it encodes every event with its Codec and upcasts on
 // load. Appends become visible to others when the InMemoryUnitOfWork
-// commits and are dropped when it rolls back.
+// commits and are dropped when it rolls back. A Command ID held by another
+// open transaction conflicts at once, even if that transaction later rolls
+// back, whereas Postgres waits for it to finish.
 type InMemoryStore struct {
 	codec *Codec
 	clock func() time.Time
@@ -192,7 +194,8 @@ func (s *InMemoryStore) recordCommand(ctx context.Context, tx *commandTx, cmd pr
 }
 
 // CleanupCommands deletes the committed Command IDs recorded before the
-// cutoff, for all Tenants. A repeat of a deleted Command ID runs as a new command.
+// cutoff, for all Tenants. A repeat of a deleted Command ID runs as a new
+// command.
 func (s *InMemoryStore) CleanupCommands(_ context.Context, before time.Time) (int64, error) {
 	return s.log.cleanupCommands(before), nil
 }

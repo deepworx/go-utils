@@ -20,8 +20,8 @@ const (
 // ago, measured on the store clock. A retention that is not positive uses
 // DefaultCommandRetention (30 days). A repeat of a deleted Command ID runs
 // as a new command, so a client must not buffer and resend a command for
-// longer than retention. The
-// run's Outcome counts the deleted Command IDs as Candidates.
+// longer than retention. The run's Outcome counts the deleted Command IDs
+// as Candidates.
 func CommandCleanupJob(store Store, retention time.Duration) scheduler.Job {
 	if retention <= 0 {
 		retention = DefaultCommandRetention
