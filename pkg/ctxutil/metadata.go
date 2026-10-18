@@ -2,9 +2,20 @@ package ctxutil
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"strings"
 
 	"github.com/google/uuid"
 )
+
+// systemActorPrefix starts the Actor of every library component
+// (system:<component>:<name>) and is reserved for them.
+const systemActorPrefix = "system:"
+
+// ErrNoActor reports a context that has neither an Actor nor a
+// Claims.UserID outside the reserved "system:" prefix.
+var ErrNoActor = errors.New("ctxutil: no actor in context")
 
 // WithTenantID returns a new context with the tenant ID set explicitly.
 // An explicit tenant ID takes precedence over Claims.TenantID.
@@ -32,6 +43,24 @@ func WithActor(ctx context.Context, actor string) context.Context {
 // An empty value counts as absent.
 func Actor(ctx context.Context) (string, bool) {
 	return nonEmptyString(ctx, actorKey)
+}
+
+// ResolveActor returns the Actor set by WithActor, falling back to
+// Claims.UserID. It returns ErrNoActor when both are empty, or when the
+// user ID carries the reserved "system:" prefix, so users cannot pose as
+// library components.
+func ResolveActor(ctx context.Context) (string, error) {
+	if actor, ok := Actor(ctx); ok {
+		return actor, nil
+	}
+	user, _ := UserID(ctx)
+	switch {
+	case user == "":
+		return "", ErrNoActor
+	case strings.HasPrefix(user, systemActorPrefix):
+		return "", fmt.Errorf("user %q uses the reserved %q prefix: %w", user, systemActorPrefix, ErrNoActor)
+	}
+	return user, nil
 }
 
 // WithCorrelationID returns a new context with the correlation ID set,

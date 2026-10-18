@@ -2,8 +2,6 @@ package eventstore
 
 import (
 	"context"
-	"fmt"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -86,8 +84,6 @@ func newStoreOptions(opts []StoreOption) storeOptions {
 	return o
 }
 
-const systemActorPrefix = "system:"
-
 // metadata is what an append records about who and what caused its events
 // (ADR-0010).
 type metadata struct {
@@ -97,29 +93,12 @@ type metadata struct {
 }
 
 func resolveMetadata(ctx context.Context, tx *commandTx) (metadata, error) {
-	actor, err := resolveActor(ctx)
+	actor, err := ctxutil.ResolveActor(ctx)
 	if err != nil {
 		return metadata{}, err
 	}
 	causation, _ := ctxutil.CausationID(ctx)
 	return metadata{actor: actor, correlation: resolveCorrelation(ctx, tx), causation: causation}, nil
-}
-
-// resolveActor prefers ctxutil.Actor, then Claims.UserID. A user ID with the
-// reserved "system:" prefix is rejected, so users cannot pose as library
-// components.
-func resolveActor(ctx context.Context) (string, error) {
-	if actor, ok := ctxutil.Actor(ctx); ok {
-		return actor, nil
-	}
-	user, _ := ctxutil.UserID(ctx)
-	switch {
-	case user == "":
-		return "", ErrNoActor
-	case strings.HasPrefix(user, systemActorPrefix):
-		return "", fmt.Errorf("user %q uses the reserved %q prefix: %w", user, systemActorPrefix, ErrNoActor)
-	}
-	return user, nil
 }
 
 func resolveCorrelation(ctx context.Context, tx *commandTx) string {

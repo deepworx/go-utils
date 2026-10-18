@@ -1,6 +1,10 @@
 package eventstore
 
-import "errors"
+import (
+	"errors"
+
+	"github.com/deepworx/go-utils/pkg/ctxutil"
+)
 
 var (
 	// ErrUnknownEventType reports an Event type that is not registered on
@@ -43,8 +47,8 @@ var (
 	ErrNoTenant = errors.New("eventstore: no tenant in context")
 	// ErrNoActor reports an append whose context has neither an Actor
 	// (ctxutil.WithActor) nor a Claims.UserID outside the reserved
-	// "system:" prefix.
-	ErrNoActor = errors.New("eventstore: no actor in context")
+	// "system:" prefix. It is ctxutil.ErrNoActor.
+	ErrNoActor = ctxutil.ErrNoActor
 	// ErrInvalidConfig reports a constructor Config that misses a required
 	// dependency. Constructors without an error result panic instead.
 	ErrInvalidConfig = errors.New("eventstore: invalid config")

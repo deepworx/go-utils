@@ -2,6 +2,7 @@ package ctxutil
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/google/uuid"
@@ -216,5 +217,38 @@ func TestStringMetadata(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestResolveActor(t *testing.T) {
+	t.Parallel()
+
+	user := func(id string) context.Context {
+		return WithClaims(context.Background(), Claims{UserID: id})
+	}
+
+	tests := []struct {
+		name    string
+		ctx     context.Context
+		want    string
+		wantErr error
+	}{
+		{name: "empty context", ctx: context.Background(), wantErr: ErrNoActor},
+		{name: "empty claims user", ctx: user(""), wantErr: ErrNoActor},
+		{name: "claims user", ctx: user("alice"), want: "alice"},
+		{name: "reserved prefix in claims", ctx: user("system:scheduler:x"), wantErr: ErrNoActor},
+		{name: "actor wins over claims", ctx: WithActor(user("alice"), "bob"), want: "bob"},
+		{name: "empty actor falls back to claims", ctx: WithActor(user("alice"), ""), want: "alice"},
+		{name: "system actor", ctx: WithActor(context.Background(), "system:inbox:src"), want: "system:inbox:src"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := ResolveActor(tt.ctx)
+			if !errors.Is(err, tt.wantErr) || got != tt.want {
+				t.Errorf("ResolveActor() = %q, %v, want %q, %v", got, err, tt.want, tt.wantErr)
+			}
+		})
 	}
 }
