@@ -3,6 +3,7 @@ package eventstore
 import (
 	"context"
 	"fmt"
+	"maps"
 	"slices"
 	"sync"
 	"time"
@@ -34,12 +35,24 @@ func NewInMemoryStore(codec *Codec, opts ...StoreOption) *InMemoryStore {
 		codec: codec,
 		clock: o.clock,
 		log: &memLog{
-			streams: make(map[streamKey][]memRecord),
-			byType:  make(map[string][]memRecord),
-			pending: make(map[any]*memPending),
-			changed: make(chan struct{}),
+			streams:  make(map[streamKey][]memRecord),
+			byType:   make(map[string][]memRecord),
+			pending:  make(map[any]*memPending),
+			commands: make(map[commandKey]memCommand),
+			changed:  make(chan struct{}),
 		},
 	}
+}
+
+type commandKey struct {
+	tenant string
+	id     uuid.UUID
+}
+
+// memCommand is a processed command as stored.
+type memCommand struct {
+	cmd        processedCommand
+	recordedAt time.Time
 }
 
 type streamKey struct {
@@ -64,16 +77,19 @@ type memLog struct {
 	byType  map[string][]memRecord
 	lastXID uint64
 	lastPos int64
-	// pending holds the appends of open transactions by commandTx.pendingKey.
+	// pending holds the writes of open transactions by commandTx.pendingKey.
 	pending map[any]*memPending
+	// commands holds the committed processed commands.
+	commands map[commandKey]memCommand
 	// changed is closed and replaced whenever a commit or rollback may have
 	// made more events visible.
 	changed chan struct{}
 }
 
 type memPending struct {
-	xid     uint64
-	records []memRecord
+	xid      uint64
+	records  []memRecord
+	commands map[commandKey]memCommand
 }
 
 func (s *InMemoryStore) load(ctx context.Context, in loadInput) ([]Envelope, error) {
@@ -147,10 +163,89 @@ func (s *InMemoryStore) append(ctx context.Context, in appendInput) (Cursor, err
 		return Cursor{}, err
 	}
 	if opened {
-		postgres.OnRollback(ctx, func() { s.log.discard(in.tx) })
-		postgres.Stage(ctx, func() { s.log.commit(in.tx) })
+		s.settle(ctx, in.tx)
 	}
 	return last, nil
+}
+
+// settle commits the pending writes of tx with its in-memory transaction,
+// or discards them on rollback.
+func (s *InMemoryStore) settle(ctx context.Context, tx *commandTx) {
+	postgres.OnRollback(ctx, func() { s.log.discard(tx) })
+	postgres.Stage(ctx, func() { s.log.commit(tx) })
+}
+
+func (s *InMemoryStore) findCommand(_ context.Context, tx *commandTx, id uuid.UUID) (processedCommand, bool, error) {
+	cmd, ok := s.log.findCommand(tx, commandKey{tenant: tx.tenant, id: id})
+	return cmd, ok, nil
+}
+
+func (s *InMemoryStore) recordCommand(ctx context.Context, tx *commandTx, cmd processedCommand) error {
+	opened, err := s.log.recordCommand(tx, memCommand{cmd: cmd, recordedAt: s.clock()})
+	if err != nil {
+		return err
+	}
+	if opened {
+		s.settle(ctx, tx)
+	}
+	return nil
+}
+
+// findCommand returns the committed command under k, or the one pending in
+// tx.
+func (l *memLog) findCommand(tx *commandTx, k commandKey) (processedCommand, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if c, ok := l.commands[k]; ok {
+		return c.cmd, true
+	}
+	if p := l.pending[tx.pendingKey()]; p != nil {
+		if c, ok := p.commands[k]; ok {
+			return c.cmd, true
+		}
+	}
+	return processedCommand{}, false
+}
+
+// recordCommand adds c to the pending writes of tx. Like the primary key
+// in Postgres, it fails when another transaction holds the same key.
+// opened reports whether this is the transaction's first write.
+func (l *memLog) recordCommand(tx *commandTx, c memCommand) (opened bool, err error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	k := commandKey{tenant: tx.tenant, id: c.cmd.id}
+	if l.commandTaken(tx, k) {
+		return false, fmt.Errorf("command %s recorded concurrently: %w", c.cmd.id, ErrConcurrencyConflict)
+	}
+	p, opened := l.openPending(tx)
+	p.commands[k] = c
+	return opened, nil
+}
+
+// commandTaken reports whether k is committed or pending in a transaction
+// other than tx. The caller holds l.mu.
+func (l *memLog) commandTaken(tx *commandTx, k commandKey) bool {
+	if _, ok := l.commands[k]; ok {
+		return true
+	}
+	for key, p := range l.pending {
+		if _, ok := p.commands[k]; ok && key != tx.pendingKey() {
+			return true
+		}
+	}
+	return false
+}
+
+// openPending returns the pending writes of tx, creating them on its first
+// write. The caller holds l.mu.
+func (l *memLog) openPending(tx *commandTx) (p *memPending, opened bool) {
+	if p := l.pending[tx.pendingKey()]; p != nil {
+		return p, false
+	}
+	l.lastXID++
+	p = &memPending{xid: l.lastXID, commands: make(map[commandKey]memCommand)}
+	l.pending[tx.pendingKey()] = p
+	return p, true
 }
 
 type stageInput struct {
@@ -162,8 +257,8 @@ type stageInput struct {
 	traceContext string
 }
 
-// stage adds records to the pending appends of in.tx. opened reports
-// whether this is the transaction's first append.
+// stage adds records to the pending writes of in.tx. opened reports
+// whether this is the transaction's first write.
 func (l *memLog) stage(in stageInput) (last Cursor, opened bool, err error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -177,12 +272,7 @@ func (l *memLog) stage(in stageInput) (last Cursor, opened bool, err error) {
 	if version != in.expected {
 		return Cursor{}, false, fmt.Errorf("stream %s at version %d, expected %d: %w", in.tx.stream, version, in.expected, ErrConcurrencyConflict)
 	}
-	if p == nil {
-		l.lastXID++
-		p = &memPending{xid: l.lastXID}
-		l.pending[in.tx.pendingKey()] = p
-		opened = true
-	}
+	p, opened = l.openPending(in.tx)
 	for i, payload := range in.payloads {
 		l.lastPos++
 		env := in.template
@@ -204,6 +294,7 @@ func (l *memLog) commit(tx *commandTx) {
 	if p == nil {
 		return
 	}
+	maps.Copy(l.commands, p.commands)
 	k := streamKey{tenant: tx.tenant, stream: tx.stream}
 	l.streams[k] = append(l.streams[k], p.records...)
 	for _, r := range p.records {

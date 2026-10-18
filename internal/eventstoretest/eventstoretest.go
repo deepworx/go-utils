@@ -79,6 +79,15 @@ func Run(t *testing.T, newBackend func(t *testing.T) Backend) {
 		{"FailedCommandRollsBack", s.failedCommandRollsBack},
 		{"OuterTransaction/OneStream", s.outerOneStream},
 		{"OuterTransaction/HoldsStreamLock", s.outerHoldsStreamLock},
+		{"CommandID/RepeatedUpdate", s.commandIDRepeatedUpdate},
+		{"CommandID/RepeatedCreate", s.commandIDRepeatedCreate},
+		{"CommandID/Reused", s.commandIDReused},
+		{"CommandID/NoOpRecorded", s.commandIDNoOpRecorded},
+		{"CommandID/RejectedLeavesNoRecord", s.commandIDRejectedLeavesNoRecord},
+		{"CommandID/BeforeExpectVersion", s.commandIDBeforeExpectVersion},
+		{"CommandID/Concurrent", s.commandIDConcurrent},
+		{"CommandID/ConcurrentOnOtherStream", s.commandIDConcurrentOnOtherStream},
+		{"CommandID/InOneTransaction", s.commandIDInOneTransaction},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -10,7 +10,7 @@ A Reactor that fails to react to an event, once its retries are spent or at once
 
 ## Consequences
 
-- Reactors are always `OwnTransaction` and therefore at-least-once. The library offers no dedupe: commands rely on aggregate state guards, and outbound calls pass `Envelope.EventID` as their idempotency key.
+- Reactors are always `OwnTransaction` and therefore at-least-once. The library offers no dedupe for them: their commands rely on aggregate state guards, and outbound calls pass `Envelope.EventID` as their idempotency key. The Command ID of ADR-0012 covers only commands from outside the event log.
 - `StartAt` (`FromNow` or `FromBeginning`) is required. The runtime seeds the Cursor at the first claim, so history is never replayed into side effects by accident.
 - `Discard` keeps the row with `discarded_at` and `discarded_by`, so a skipped side effect stays traceable. The service owns cleanup.
 - `Drain` also runs the redrives that are due at call time, so tests under `testing/synctest` can advance time and watch a hold heal.

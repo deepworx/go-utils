@@ -20,9 +20,14 @@ var (
 	// ErrAlreadyExists reports a Create for a Stream that already has
 	// events, under any stream type.
 	ErrAlreadyExists = errors.New("eventstore: stream already exists")
-	// ErrConcurrencyConflict reports a stale Expected version, or a Save of
-	// an Aggregate whose Stream moved on since it was loaded.
+	// ErrConcurrencyConflict reports a stale Expected version, a Save of an
+	// Aggregate whose Stream moved on since it was loaded, or a Command ID
+	// recorded concurrently by a command on another Stream. A retry gets
+	// the definite answer.
 	ErrConcurrencyConflict = errors.New("eventstore: concurrency conflict")
+	// ErrCommandIDReused reports a Command ID that the Tenant already used
+	// for a command on another Stream.
+	ErrCommandIDReused = errors.New("eventstore: command id reused on another stream")
 	// ErrNotCommandTransaction reports a Save outside a Command transaction.
 	ErrNotCommandTransaction = errors.New("eventstore: not in a command transaction")
 	// ErrStreamMismatch reports touching a Stream other than the one the

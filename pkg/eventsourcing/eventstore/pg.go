@@ -22,8 +22,12 @@ const defaultSchema = "public"
 // stream_position) in docs/postgres/schema.sql.
 const streamPositionKey = "events_stream_position_key"
 
-// errNoPgTransaction reports a PgStore append outside a PgUnitOfWork.
-var errNoPgTransaction = errors.New("eventstore: PgStore appends only inside a PgUnitOfWork")
+// processedCommandsKey is the primary key on (tenant_id, command_id) in
+// docs/postgres/schema.sql.
+const processedCommandsKey = "processed_commands_pkey"
+
+// errNoPgTransaction reports a PgStore write outside a PgUnitOfWork.
+var errNoPgTransaction = errors.New("eventstore: PgStore writes only inside a PgUnitOfWork")
 
 // checkSchema applies the default schema and rejects one whose derived
 // channel <schema>.events is not a valid notify channel.
@@ -43,13 +47,14 @@ type PgStoreConfig struct {
 	Pool *pgxpool.Pool
 	// Codec encodes and decodes the events. Required.
 	Codec *Codec
-	// Schema qualifies the events table, whose trigger notifies
-	// <schema>.events. Defaults to public.
+	// Schema qualifies the events and processed_commands tables; the events
+	// trigger notifies <schema>.events. Defaults to public.
 	Schema string
 }
 
-// PgStore is the event log in the events table of docs/postgres/schema.sql.
-// It appends only inside a Command transaction of a PgUnitOfWork.
+// PgStore is the event log in the events table of docs/postgres/schema.sql,
+// with the Command IDs in processed_commands. It writes only inside a
+// Command transaction of a PgUnitOfWork.
 type PgStore struct {
 	pool    *pgxpool.Pool
 	schema  string
@@ -59,13 +64,16 @@ type PgStore struct {
 }
 
 type pgQueries struct {
-	load    string
-	version string
-	insert  string
+	load          string
+	version       string
+	insert        string
+	findCommand   string
+	recordCommand string
 }
 
 func newPgQueries(schema string) pgQueries {
 	table := pgx.Identifier{schema, "events"}.Sanitize()
+	commands := pgx.Identifier{schema, "processed_commands"}.Sanitize()
 	return pgQueries{
 		load: `SELECT transaction_id::text::numeric, global_position, event_id, stream_type, stream_position,
 				event_type, schema_version, event_data, actor, correlation_id, causation_id, recorded_at
@@ -82,6 +90,10 @@ func newPgQueries(schema string) pgQueries {
 				AS e(event_id, event_type, schema_version, event_data, ord)
 			ORDER BY e.ord
 			RETURNING transaction_id::text::numeric, global_position`,
+		findCommand: `SELECT stream_id, transaction_id::text::numeric, position, version FROM ` + commands + `
+			WHERE tenant_id = $1 AND command_id = $2`,
+		recordCommand: `INSERT INTO ` + commands + ` (tenant_id, command_id, stream_id, transaction_id, position, version, recorded_at)
+			VALUES ($1, $2, $3, $4::numeric::text::xid8, $5, $6, $7)`,
 	}
 }
 
@@ -180,6 +192,38 @@ func (s *PgStore) append(ctx context.Context, in appendInput) (Cursor, error) {
 		return Cursor{}, fmt.Errorf("append to %s: %w", in.tx.stream, asConflict(err))
 	}
 	return cursors[len(cursors)-1], nil
+}
+
+func (s *PgStore) findCommand(ctx context.Context, tx *commandTx, id uuid.UUID) (processedCommand, bool, error) {
+	cmd := processedCommand{id: id}
+	pos := &cmd.result.Position
+	err := postgres.Conn(ctx, s.pool).QueryRow(ctx, s.queries.findCommand, tx.tenant, id).
+		Scan(&cmd.stream, &pos.TransactionID, &pos.Position, &cmd.result.Version)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return processedCommand{}, false, nil
+	case err != nil:
+		return processedCommand{}, false, fmt.Errorf("find command %s: %w", id, err)
+	}
+	return cmd, true, nil
+}
+
+func (s *PgStore) recordCommand(ctx context.Context, tx *commandTx, cmd processedCommand) error {
+	pgTx := postgres.TxFromContext(ctx)
+	if pgTx == nil {
+		return errNoPgTransaction
+	}
+	pos := cmd.result.Position
+	_, err := pgTx.Exec(ctx, s.queries.recordCommand,
+		tx.tenant, cmd.id, cmd.stream, pos.TransactionID, pos.Position, cmd.result.Version, s.clock())
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.ConstraintName == processedCommandsKey {
+		return fmt.Errorf("command %s recorded concurrently: %w: %w", cmd.id, ErrConcurrencyConflict, err)
+	}
+	if err != nil {
+		return fmt.Errorf("record command %s: %w", cmd.id, err)
+	}
+	return nil
 }
 
 // pgBatch holds the per-event columns of an append as parallel arrays.

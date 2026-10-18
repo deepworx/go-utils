@@ -93,13 +93,13 @@ func (s suite) expectedVersion(t *testing.T) {
 
 	tests := []struct {
 		name    string
-		expect  []eventstore.UpdateOption
+		expect  []eventstore.CommandOption
 		wantErr error
 		version int
 	}{
-		{"matching", []eventstore.UpdateOption{eventstore.ExpectVersion(1)}, nil, 2},
-		{"stale", []eventstore.UpdateOption{eventstore.ExpectVersion(1)}, eventstore.ErrConcurrencyConflict, 2},
-		{"zero disables the check", []eventstore.UpdateOption{eventstore.ExpectVersion(0)}, nil, 3},
+		{"matching", []eventstore.CommandOption{eventstore.ExpectVersion(1)}, nil, 2},
+		{"stale", []eventstore.CommandOption{eventstore.ExpectVersion(1)}, eventstore.ErrConcurrencyConflict, 2},
+		{"zero disables the check", []eventstore.CommandOption{eventstore.ExpectVersion(0)}, nil, 3},
 		{"omitted", nil, nil, 4},
 	}
 	for _, tt := range tests {

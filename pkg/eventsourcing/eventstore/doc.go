@@ -25,9 +25,14 @@
 //		return t.Complete()
 //	}, eventstore.ExpectVersion(lastVersion))
 //
-// In production the same Repository runs on Postgres (the events table of
-// docs/postgres/schema.sql) with NewPgStore and NewPgUnitOfWork, which
-// serializes writers per Stream with a transaction-scoped advisory lock.
+// A client that may resend a command, such as an offline mobile app, passes
+// WithCommandID: a repeat returns the original CommandResult with Replayed
+// set instead of running again (ADR-0012).
+//
+// In production the same Repository runs on Postgres (the events and
+// processed_commands tables of docs/postgres/schema.sql) with NewPgStore
+// and NewPgUnitOfWork, which serializes writers per Stream with a
+// transaction-scoped advisory lock.
 //
 // The Tenant comes from ctxutil.TenantID. Each event records its Actor
 // (ctxutil.WithActor, else Claims.UserID), Correlation

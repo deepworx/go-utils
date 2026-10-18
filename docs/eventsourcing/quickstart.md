@@ -192,6 +192,10 @@ func (a *App) CompleteTask(ctx context.Context, id todo.TaskID) (eventstore.Comm
 - `CommandResult.Version` is the Aggregate version. A client that sends it
   with its next command (`eventstore.ExpectVersion(v)`) gets
   `ErrConcurrencyConflict` instead of acting on a stale view.
+- A client that may resend a command after a lost response passes
+  `eventstore.WithCommandID(id)` with a UUID it chose. A repeat returns the
+  original result with `Replayed` set and does not run `fn` again
+  (ADR-0012).
 - Writers to one Stream are serialized from the load until the commit. On
   Postgres this uses a transaction-scoped advisory lock.
 - Guard (`pkg/postgres/guard`) and numbering (`pkg/postgres/numbering`) calls

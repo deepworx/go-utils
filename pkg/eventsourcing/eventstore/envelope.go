@@ -46,8 +46,11 @@ type Envelope struct {
 // CommandResult is what a command returns. Position is the Cursor of the
 // last event written, for read-your-writes; it is zero when the command
 // raised no events. Version is the Aggregate version after the command, the
-// Expected version of the caller's next command.
+// Expected version of the caller's next command. Replayed reports a repeat
+// of a Command ID (WithCommandID) that returned the original result without
+// running the command again.
 type CommandResult struct {
 	Position Cursor
 	Version  int
+	Replayed bool
 }

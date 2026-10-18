@@ -69,42 +69,62 @@ func NewRepository[I aggregate.ID, A any, P interface {
 // Stream has events, under any stream type. Inside the Command transaction
 // for the same Stream it joins it; inside one for another Stream it fails
 // with ErrStreamMismatch.
-func (r *Repository[I, A, P]) Create(ctx context.Context, id I, fn func(ctx context.Context, agg P) error) (CommandResult, error) {
-	var res CommandResult
-	create := func(ctx context.Context) error {
+func (r *Repository[I, A, P]) Create(ctx context.Context, id I, fn func(ctx context.Context, agg P) error, opts ...CommandOption) (CommandResult, error) {
+	create := func(ctx context.Context) (CommandResult, error) {
 		envs, err := r.loadEnvelopes(ctx, loadInput{stream: uuid.UUID(id)})
 		if err != nil {
-			return err
+			return CommandResult{}, err
 		}
 		if len(envs) > 0 {
-			return ErrAlreadyExists
+			return CommandResult{}, ErrAlreadyExists
 		}
 		agg := r.allocate(id)
 		if err := fn(ctx, agg); err != nil {
-			return err
+			return CommandResult{}, err
 		}
-		res, err = r.saveCommand(ctx, agg)
-		return err
+		return r.saveCommand(ctx, agg)
 	}
-	err := r.command(ctx, commandCall[I]{span: telemetry.SpanCreate(r.streamType), id: id, fn: create})
+	call := commandCall[I]{span: telemetry.SpanCreate(r.streamType), id: id, opts: newCommandOptions(opts), fn: create}
+	res, err := r.command(ctx, call)
 	if err != nil {
 		return CommandResult{}, fmt.Errorf("create %s %s: %w", r.streamType, uuid.UUID(id), err)
 	}
 	return res, nil
 }
 
-// UpdateOption configures Update.
-type UpdateOption func(*updateOptions)
+// CommandOption configures Create and Update.
+type CommandOption func(*commandOptions)
 
-type updateOptions struct {
-	expected int
+type commandOptions struct {
+	expected  int
+	commandID uuid.UUID
+}
+
+func newCommandOptions(opts []CommandOption) commandOptions {
+	var o commandOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
+	return o
 }
 
 // ExpectVersion makes Update fail with ErrConcurrencyConflict unless the
 // Aggregate is at version v, typically the Version of the caller's last
-// CommandResult. 0 disables the check.
-func ExpectVersion(v int) UpdateOption {
-	return func(o *updateOptions) { o.expected = v }
+// CommandResult. 0 disables the check. Create always expects an empty
+// Stream and ignores it.
+func ExpectVersion(v int) CommandOption {
+	return func(o *commandOptions) { o.expected = v }
+}
+
+// WithCommandID makes the command take effect at most once per Tenant
+// (ADR-0012). A repeat with the same id returns the original CommandResult
+// with Replayed set, without running fn and before the Expected version is
+// checked. The same id on another Stream fails with ErrCommandIDReused.
+// The id is recorded in the Command transaction, also when fn raises
+// nothing; a rejected command records nothing. uuid.Nil disables the
+// dedupe.
+func WithCommandID(id uuid.UUID) CommandOption {
+	return func(o *commandOptions) { o.commandID = id }
 }
 
 // Update loads the Aggregate, checks the Expected version, runs fn and saves
@@ -112,27 +132,23 @@ func ExpectVersion(v int) UpdateOption {
 // result has a zero Position. Inside the Command transaction for the same
 // Stream it joins it; inside one for another Stream it fails with
 // ErrStreamMismatch.
-func (r *Repository[I, A, P]) Update(ctx context.Context, id I, fn func(ctx context.Context, agg P) error, opts ...UpdateOption) (CommandResult, error) {
-	var o updateOptions
-	for _, opt := range opts {
-		opt(&o)
-	}
-	var res CommandResult
-	update := func(ctx context.Context) error {
+func (r *Repository[I, A, P]) Update(ctx context.Context, id I, fn func(ctx context.Context, agg P) error, opts ...CommandOption) (CommandResult, error) {
+	o := newCommandOptions(opts)
+	update := func(ctx context.Context) (CommandResult, error) {
 		agg, err := r.load(ctx, loadInput{stream: uuid.UUID(id)})
 		if err != nil {
-			return err
+			return CommandResult{}, err
 		}
 		if o.expected > 0 && agg.Version() != o.expected {
-			return fmt.Errorf("at version %d, expected %d: %w", agg.Version(), o.expected, ErrConcurrencyConflict)
+			return CommandResult{}, fmt.Errorf("at version %d, expected %d: %w", agg.Version(), o.expected, ErrConcurrencyConflict)
 		}
 		if err := fn(ctx, agg); err != nil {
-			return err
+			return CommandResult{}, err
 		}
-		res, err = r.saveCommand(ctx, agg)
-		return err
+		return r.saveCommand(ctx, agg)
 	}
-	err := r.command(ctx, commandCall[I]{span: telemetry.SpanUpdate(r.streamType), id: id, fn: update})
+	call := commandCall[I]{span: telemetry.SpanUpdate(r.streamType), id: id, opts: o, fn: update}
+	res, err := r.command(ctx, call)
 	if err != nil {
 		return CommandResult{}, fmt.Errorf("update %s %s: %w", r.streamType, uuid.UUID(id), err)
 	}
@@ -203,17 +219,58 @@ func (r *Repository[I, A, P]) Save(ctx context.Context, agg P) (CommandResult, e
 type commandCall[I aggregate.ID] struct {
 	span string
 	id   I
-	fn   func(ctx context.Context) error
+	opts commandOptions
+	fn   func(ctx context.Context) (CommandResult, error)
 }
 
 // command runs call in its Command transaction.
-func (r *Repository[I, A, P]) command(ctx context.Context, call commandCall[I]) error {
+func (r *Repository[I, A, P]) command(ctx context.Context, call commandCall[I]) (CommandResult, error) {
 	tenant, _ := ctxutil.TenantID(ctx)
 	stream := uuid.UUID(call.id)
 	cmd := commandInput{name: call.span, tenant: tenant, stream: stream.String()}
-	return r.inst.command(ctx, cmd, func(ctx context.Context) error {
-		return r.uow.Within(ctx, stream, call.fn)
+	var res CommandResult
+	err := r.inst.command(ctx, cmd, func(ctx context.Context) error {
+		return r.uow.Within(ctx, stream, func(ctx context.Context) error {
+			var err error
+			res, err = r.deduplicated(ctx, call)
+			return err
+		})
 	})
+	return res, err
+}
+
+// deduplicated runs call.fn unless its Command ID is already recorded for the
+// Tenant, and records the Command ID with the result in the same Command
+// transaction.
+func (r *Repository[I, A, P]) deduplicated(ctx context.Context, call commandCall[I]) (CommandResult, error) {
+	if call.opts.commandID == uuid.Nil {
+		return call.fn(ctx)
+	}
+	tx, err := commandTxFor(ctx, uuid.UUID(call.id))
+	if err != nil {
+		return CommandResult{}, err
+	}
+	prior, found, err := r.store.findCommand(ctx, tx, call.opts.commandID)
+	if err != nil {
+		return CommandResult{}, err
+	}
+	if found {
+		if prior.stream != tx.stream {
+			return CommandResult{}, fmt.Errorf("command %s ran on stream %s: %w", prior.id, prior.stream, ErrCommandIDReused)
+		}
+		res := prior.result
+		res.Replayed = true
+		return res, nil
+	}
+	res, err := call.fn(ctx)
+	if err != nil {
+		return CommandResult{}, err
+	}
+	err = r.store.recordCommand(ctx, tx, processedCommand{id: call.opts.commandID, stream: tx.stream, result: res})
+	if err != nil {
+		return CommandResult{}, err
+	}
+	return res, nil
 }
 
 // saveCommand saves agg and annotates the Command span with the event

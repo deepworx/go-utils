@@ -83,6 +83,28 @@ CREATE TRIGGER events_notify
     FOR EACH STATEMENT EXECUTE FUNCTION public.events_notify();
 
 -- ---------------------------------------------------------------------------
+-- pkg/eventsourcing/eventstore: Command IDs of deduplicated commands
+-- (ADR-0012), written in the Command transaction. A row holds the Stream
+-- the command changed and its result: the Cursor of its last event (0, 0
+-- when it raised none) and the Aggregate version after it. recorded_at is
+-- set by the store clock; the service owns the cleanup.
+-- ---------------------------------------------------------------------------
+CREATE TABLE public.processed_commands (
+    tenant_id      TEXT        NOT NULL,
+    command_id     UUID        NOT NULL,
+    stream_id      UUID        NOT NULL,
+    transaction_id XID8        NOT NULL,
+    position       BIGINT      NOT NULL,
+    version        INT         NOT NULL,
+    recorded_at    TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (tenant_id, command_id)
+);
+
+-- Cleanup scan by age.
+CREATE INDEX processed_commands_recorded_at_idx
+    ON public.processed_commands (recorded_at);
+
+-- ---------------------------------------------------------------------------
 -- pkg/eventsourcing/consumer: one Cursor per Consumer. The Cursor is the
 -- last processed matching event; a filtered Cursor stays at its last
 -- matching event. Updates are compare-and-set on the expected Cursor, which

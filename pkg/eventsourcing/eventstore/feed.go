@@ -136,7 +136,7 @@ func (l *memLog) ranges(types []string) [][]memRecord {
 }
 
 // horizon returns the smallest transaction ID of an open Command
-// transaction that has appended; every committed event below it is
+// transaction that has written; every committed event below it is
 // visible. The caller holds l.mu.
 func (l *memLog) horizon() uint64 {
 	horizon := uint64(math.MaxUint64)

@@ -22,6 +22,10 @@ _Avoid_: Unit of work (names the mechanism, not the concept)
 **Expected version**:
 The Aggregate version a client last saw, sent with a command so the command fails instead of acting on a stale view.
 
+**Command ID**:
+A client-chosen UUID that makes a command take effect at most once per Tenant.
+_Avoid_: Idempotency key, request ID
+
 **Event type**:
 The permanent name of a kind of event, stored with every event of that kind; it never changes once events have been written.
 

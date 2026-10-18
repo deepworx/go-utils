@@ -25,6 +25,20 @@ type Store interface {
 	// transaction in ctx and returns the Cursor of the last one. It fails
 	// with ErrConcurrencyConflict when the Stream is not at expected.
 	append(ctx context.Context, in appendInput) (Cursor, error)
+	// findCommand returns the command recorded under id for the Tenant of
+	// tx, including one recorded earlier in tx.
+	findCommand(ctx context.Context, tx *commandTx, id uuid.UUID) (processedCommand, bool, error)
+	// recordCommand records cmd in tx. It fails with ErrConcurrencyConflict
+	// when another transaction recorded cmd.id for the Tenant meanwhile.
+	recordCommand(ctx context.Context, tx *commandTx, cmd processedCommand) error
+}
+
+// processedCommand is a command that ran under a Command ID: the Stream it
+// changed and the result it returned.
+type processedCommand struct {
+	id     uuid.UUID
+	stream uuid.UUID
+	result CommandResult
 }
 
 type loadInput struct {
@@ -51,8 +65,8 @@ type storeOptions struct {
 	clock func() time.Time
 }
 
-// WithClock sets the clock that stamps recorded_at on append. The default
-// is time.Now().UTC().
+// WithClock sets the clock that stamps recorded_at on appended events and
+// processed commands. The default is time.Now().UTC().
 func WithClock(clock func() time.Time) StoreOption {
 	return func(o *storeOptions) { o.clock = clock }
 }
