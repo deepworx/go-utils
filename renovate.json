@@ -6,5 +6,8 @@
     ":configMigration",
     ":pinDevDependencies",
     "abandonments:recommended"
-  ]
+  ],
+  "prHourlyLimit": 0,
+  "prConcurrentLimit": 0,
+  "branchConcurrentLimit": 0
 }
