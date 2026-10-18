@@ -12,7 +12,7 @@ All tenants share one set of tables in one Postgres schema, and every library ta
 ## Consequences
 
 - Every write path needs a tenant in the context (`ctxutil.WithTenantID` or the claims), otherwise it fails with `ErrNoTenant`. An empty tenant counts as absent. Single-tenant services set a fixed tenant with `ctxutil.WithTenantID` in middleware or the root context; there is no library option for it.
-- The stream lock key hashes the schema, the tenant and the stream ID together (`fnv64(schema‖0x00‖tenant‖0x00‖stream_id)`).
+- The stream lock key hashes the schema, the tenant and the stream ID together (the first 8 bytes, big-endian, of `sha256(schema‖0x00‖tenant‖0x00‖stream_id)`). The hash is collision-resistant, so a chosen stream ID cannot share another tenant's lock.
 - A poison event in a projection stops it for all tenants.
 - `pg_snapshot_xmin` is database-wide, so a long transaction in one tenant delays consumer visibility for all tenants. This costs latency, not correctness.
 - Guards and numbering are scoped by tenant, so each tenant has its own gapless ranges.

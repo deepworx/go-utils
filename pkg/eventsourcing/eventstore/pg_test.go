@@ -2,8 +2,9 @@ package eventstore_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"errors"
-	"hash/fnv"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -197,8 +198,8 @@ func TestPgNonPublicSchemaUsesDerivedNames(t *testing.T) {
 		stream := uuid.UUID(id)
 		holdStream(t, newPgUnitOfWork(t, pool, "alt"), ctx, stream)
 
-		if !advisoryLockHeld(t, pool, fnv64a("alt\x00t1\x00"+stream.String())) {
-			t.Fatal("no advisory lock with key fnv64a(alt‖0‖t1‖0‖stream)")
+		if !advisoryLockHeld(t, pool, sha256Key("alt\x00t1\x00"+stream.String())) {
+			t.Fatal("no advisory lock with key sha256(alt‖0‖t1‖0‖stream)")
 		}
 		public := newPgUnitOfWork(t, pool, "public")
 		if err := public.Execute(boundedCtx(t, ctx), stream, func(context.Context) error { return nil }); err != nil {
@@ -372,10 +373,11 @@ func countEvents(t *testing.T, pool *pgxpool.Pool, schema string) int {
 	return n
 }
 
-func fnv64a(s string) int64 {
-	h := fnv.New64a()
-	_, _ = h.Write([]byte(s))
-	return int64(h.Sum64()) //nolint:gosec // advisory lock keys reuse the bit pattern
+// sha256Key is the first 8 bytes of sha256(s), big-endian, as a bigint
+// advisory lock key.
+func sha256Key(s string) int64 {
+	sum := sha256.Sum256([]byte(s))
+	return int64(binary.BigEndian.Uint64(sum[:8])) //nolint:gosec // advisory lock keys reuse the bit pattern
 }
 
 // advisoryLockHeld reports whether a bigint advisory lock on key is

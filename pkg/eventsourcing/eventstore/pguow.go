@@ -2,8 +2,9 @@ package eventstore
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"fmt"
-	"hash/fnv"
 	"strconv"
 
 	"github.com/google/uuid"
@@ -110,17 +111,19 @@ func (r streamRef) String() string {
 	return strconv.Quote(r.schema) + "/" + strconv.Quote(r.tenant) + "/" + r.stream.String()
 }
 
-// lockKey is fnv64a(schema ‖ 0x00 ‖ tenant ‖ 0x00 ‖ stream), with stream in
-// its canonical text form, as a bigint advisory lock key.
+// lockKey is the first 8 bytes, big-endian, of
+// sha256(schema ‖ 0x00 ‖ tenant ‖ 0x00 ‖ stream), with stream in its
+// canonical text form, as a bigint advisory lock key. A collision-resistant
+// hash keeps a chosen stream ID from sharing another tenant's lock.
 func (r streamRef) lockKey() int64 {
-	h := fnv.New64a()
+	h := sha256.New()
 	for i, part := range []string{r.schema, r.tenant, r.stream.String()} {
 		if i > 0 {
 			_, _ = h.Write([]byte{0})
 		}
 		_, _ = h.Write([]byte(part))
 	}
-	return int64(h.Sum64()) //nolint:gosec // the bit pattern is the key; overflow is intended
+	return int64(binary.BigEndian.Uint64(h.Sum(nil))) //nolint:gosec // the bit pattern is the key; overflow is intended
 }
 
 var _ UnitOfWork = (*PgUnitOfWork)(nil)

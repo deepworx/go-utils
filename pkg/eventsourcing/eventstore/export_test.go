@@ -19,3 +19,9 @@ func TraceContexts(s *InMemoryStore, tenant string, stream uuid.UUID) []string {
 	}
 	return out
 }
+
+// StreamLockKey returns the advisory lock key of a Stream of tenant in
+// schema.
+func StreamLockKey(schema, tenant string, stream uuid.UUID) int64 {
+	return streamRef{schema: schema, tenant: tenant, stream: stream}.lockKey()
+}
