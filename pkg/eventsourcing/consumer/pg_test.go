@@ -451,7 +451,9 @@ func TestPgRunWakesOnNotify(t *testing.T) {
 	go func() { done <- c.Run(ctx) }()
 	t.Cleanup(func() {
 		cancel()
-		<-done
+		if err := <-done; err != nil {
+			t.Errorf("Run() error = %v", err)
+		}
 	})
 
 	// The first poll after acquiring the lease finds nothing; wait for it so

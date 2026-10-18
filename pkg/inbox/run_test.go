@@ -41,7 +41,9 @@ func startBackground(t *testing.T, run func(context.Context) error) {
 	go func() { done <- run(ctx) }()
 	t.Cleanup(func() {
 		cancel()
-		<-done
+		if err := <-done; err != nil {
+			t.Errorf("Run() error = %v", err)
+		}
 	})
 }
 
