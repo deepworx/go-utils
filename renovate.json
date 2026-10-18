@@ -9,5 +9,15 @@
   ],
   "prHourlyLimit": 0,
   "prConcurrentLimit": 0,
-  "branchConcurrentLimit": 0
+  "branchConcurrentLimit": 0,
+  "packageRules": [
+    {
+      "description": "Automerge non-major Go module updates after 3 days",
+      "matchManagers": ["gomod"],
+      "matchDepTypes": ["require", "indirect"],
+      "matchUpdateTypes": ["minor", "patch", "digest"],
+      "minimumReleaseAge": "3 days",
+      "automerge": true
+    }
+  ]
 }
