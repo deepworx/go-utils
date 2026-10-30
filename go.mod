@@ -3,7 +3,7 @@ module github.com/deepworx/go-utils
 go 1.27.0
 
 require (
-	connectrpc.com/connect/v2 v2.0.1
+	connectrpc.com/connect/v2 v2.0.2
 	connectrpc.com/grpchealth/v2 v2.0.0
 	connectrpc.com/otelconnect v0.12.0
 	connectrpc.com/validate v0.9.0
