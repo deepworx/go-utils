@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.8.1](https://github.com/deepworx/go-utils/compare/v0.8.0...v0.8.1) (2026-11-01)
+
+
+### Bug Fixes
+
+* **deps:** update module connectrpc.com/connect/v2 to v2.0.2 ([#62](https://github.com/deepworx/go-utils/issues/62)) ([39b69b5](https://github.com/deepworx/go-utils/commit/39b69b525143522c1b13426c0b2a3caa29f7a317))
+* **deps:** update module github.com/lestrrat-go/jwx/v4 to v4.6.0 ([#63](https://github.com/deepworx/go-utils/issues/63)) ([3121f97](https://github.com/deepworx/go-utils/commit/3121f97cc1f84a531e53e56dd87939d0e9a833cc))
+* **deps:** update module github.com/nats-io/nats.go to v1.55.0 ([#64](https://github.com/deepworx/go-utils/issues/64)) ([0d8ef91](https://github.com/deepworx/go-utils/commit/0d8ef916749eb324aebb5caef1d8593bf0d2a0e5))
+
 ## [0.8.0](https://github.com/deepworx/go-utils/compare/v0.7.0...v0.8.0) (2026-10-18)
 
 
