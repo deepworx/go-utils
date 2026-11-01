@@ -13,7 +13,7 @@ require (
 	github.com/jwx-go/jwkfetch/v4 v4.0.4
 	github.com/knadh/koanf/v2 v2.4.1
 	github.com/lestrrat-go/httprc/v3 v3.0.6
-	github.com/lestrrat-go/jwx/v4 v4.5.0
+	github.com/lestrrat-go/jwx/v4 v4.6.0
 	github.com/nats-io/nats.go v1.54.0
 	github.com/testcontainers/testcontainers-go v0.44.0
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.44.0
