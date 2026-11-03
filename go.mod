@@ -9,7 +9,7 @@ require (
 	connectrpc.com/validate v0.9.0
 	github.com/exaring/otelpgx v0.13.0
 	github.com/google/uuid v1.6.0
-	github.com/jackc/pgx/v5 v5.11.0
+	github.com/jackc/pgx/v5 v5.12.0
 	github.com/jwx-go/jwkfetch/v4 v4.0.4
 	github.com/knadh/koanf/v2 v2.4.1
 	github.com/lestrrat-go/httprc/v3 v3.0.6
