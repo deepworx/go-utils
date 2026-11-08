@@ -202,7 +202,8 @@ func (a *App) CompleteTask(ctx context.Context, id todo.TaskID) (eventstore.Comm
   original result with `Replayed` set and does not run `fn` again
   (ADR-0012). `eventstore.CommandCleanupJob(store, retention)` deletes
   Command IDs daily (default retention 30 days); a repeat after that runs
-  as a new command, so clients must not resend older commands.
+  as a new command, so clients must not resend older commands. A Command ID
+  is not a once-only guard (see [Once-only effects](#once-only-effects)).
 - Writers to one Stream are serialized from the load until the commit. On
   Postgres this uses a transaction-scoped advisory lock.
 - On Postgres, Command transactions must run at READ COMMITTED, including an
@@ -212,6 +213,35 @@ func (a *App) CompleteTask(ctx context.Context, id todo.TaskID) (eventstore.Comm
   inside `fn` join the Command transaction. The stream lock serializes only
   writers to this Stream, so reads of other data are as fresh as READ
   COMMITTED, no more.
+
+### Once-only effects
+
+A Command ID covers client retries within the retention. It does not guard
+an effect that must happen only once, such as a seed or one-time setup:
+after cleanup, a fixed Command ID runs the command again. Guard such an
+effect with Stream state: create the Stream with `Create` and treat
+`ErrAlreadyExists` as "already done", or let an Aggregate state guard reject
+the repeat, as `Complete` does with `todo.ErrAlreadyDone`.
+
+A seed that runs on every start uses a deterministic Stream ID and `Create`,
+and ignores `ErrAlreadyExists`. A Stream ID is unique within its Tenant, so
+it seeds once per Tenant; ctx must carry the Tenant and a `system:` Actor (see
+[Request metadata](#request-metadata-tenant-actor-correlation)). This is a
+sketch, not part of the quickstart service:
+
+```go
+func (a *App) SeedWelcomeTask(ctx context.Context) error {
+	name := []byte("https://todo.example.com/seed/welcome")
+	id := todo.TaskID(uuid.NewSHA1(uuid.NameSpaceURL, name))
+	_, err := a.tasks.Create(ctx, id, func(_ context.Context, t *todo.Task) error {
+		return t.Open("Read the quickstart", "admin@example.com")
+	})
+	if err != nil && !errors.Is(err, eventstore.ErrAlreadyExists) {
+		return fmt.Errorf("seed welcome task: %w", err)
+	}
+	return nil
+}
+```
 
 ### Request metadata: Tenant, Actor, Correlation
 

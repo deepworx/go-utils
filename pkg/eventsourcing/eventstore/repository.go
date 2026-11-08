@@ -124,7 +124,10 @@ func ExpectVersion(v int) CommandOption {
 // nothing; a rejected command records nothing. uuid.Nil disables the
 // dedupe. An id recorded concurrently fails with ErrConcurrencyConflict;
 // on Postgres that aborts the whole Command transaction, including a
-// caller's outer one, since no savepoint guards the insert.
+// caller's outer one, since no savepoint guards the insert. A Command ID
+// covers only retries within the CommandCleanupJob retention; guard an
+// effect that must happen only once with Stream state instead (Create and
+// ErrAlreadyExists, or an Aggregate state guard).
 func WithCommandID(id uuid.UUID) CommandOption {
 	return func(o *commandOptions) { o.commandID = id }
 }
