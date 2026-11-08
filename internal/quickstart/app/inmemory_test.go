@@ -20,7 +20,9 @@ import (
 
 func TestCodec(t *testing.T) {
 	t.Parallel()
-	eventstore.CheckCodec(t, app.Codec())
+	if err := eventstore.CheckCodec(app.Codec()); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // TestInMemoryBoot boots the service the way the quickstart's in-memory

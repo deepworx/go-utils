@@ -3,9 +3,10 @@ package eventstore
 import (
 	"encoding"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"reflect"
 	"slices"
-	"testing"
 
 	"github.com/deepworx/go-utils/pkg/eventsourcing/aggregate"
 )
@@ -19,56 +20,49 @@ var (
 	rawMessageType    = reflect.TypeFor[json.RawMessage]()
 )
 
-// CheckCodec fails t for every event registered on codec that has an
-// exported field without a `json` tag, directly or in a nested type, or that
-// does not survive an Encode and Decode round trip with every settable field
-// filled. Call it from a test of the service that registers its events.
-func CheckCodec(t testing.TB, codec *Codec) {
-	t.Helper()
-
+// CheckCodec reports every event registered on codec that has an exported
+// field without a `json` tag, directly or in a nested type, or that does not
+// survive an Encode and Decode round trip with every settable field filled.
+// It returns all problems joined with errors.Join, each naming its event
+// type, or nil when there are none. Call it from a test of the service that
+// registers its events and fail the test on a non-nil error.
+func CheckCodec(codec *Codec) error {
+	var errs []error
 	for _, eventType := range codec.eventTypes() {
 		reg, err := codec.registration(eventType)
 		if err != nil {
-			t.Errorf("CheckCodec %q: %v", eventType, err)
+			errs = append(errs, fmt.Errorf("CheckCodec %q: %w", eventType, err))
 			continue
 		}
 		for _, path := range untaggedFields(reg.typ) {
-			t.Errorf("CheckCodec %q: exported field %s has no json tag", eventType, path)
+			errs = append(errs, fmt.Errorf("CheckCodec %q: exported field %s has no json tag", eventType, path))
 		}
-		codec.checkRoundTrip(t, roundTrip{eventType: eventType, typ: reg.typ})
+		if err := codec.checkRoundTrip(eventType, reg.typ); err != nil {
+			errs = append(errs, fmt.Errorf("CheckCodec %q: %w", eventType, err))
+		}
 	}
+	return errors.Join(errs...)
 }
 
-// roundTrip is a registered event type and its Go type.
-type roundTrip struct {
-	eventType string
-	typ       reflect.Type
-}
-
-func (c *Codec) checkRoundTrip(t testing.TB, in roundTrip) {
-	t.Helper()
-
-	codec, eventType, typ := c, in.eventType, in.typ
+func (c *Codec) checkRoundTrip(eventType string, typ reflect.Type) error {
 	sample := reflect.New(typ).Elem()
 	fillSample(sample, 0)
 	event, ok := sample.Interface().(aggregate.Event)
 	if !ok {
-		t.Errorf("CheckCodec %q: %s does not implement aggregate.Event", eventType, typ)
-		return
+		return fmt.Errorf("%s does not implement aggregate.Event", typ)
 	}
-	payload, err := codec.Encode(event)
+	payload, err := c.Encode(event)
 	if err != nil {
-		t.Errorf("CheckCodec %q: %v", eventType, err)
-		return
+		return err
 	}
-	decoded, err := codec.Decode(payload)
+	decoded, err := c.Decode(payload)
 	if err != nil {
-		t.Errorf("CheckCodec %q: %v", eventType, err)
-		return
+		return err
 	}
 	if !reflect.DeepEqual(decoded, event) {
-		t.Errorf("CheckCodec %q: round trip changed the event:\n got %#v\nwant %#v\njson %s", eventType, decoded, event, payload.Data)
+		return fmt.Errorf("round trip changed the event:\n got %#v\nwant %#v\njson %s", decoded, event, payload.Data)
 	}
+	return nil
 }
 
 func (c *Codec) eventTypes() []string {

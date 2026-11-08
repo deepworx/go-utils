@@ -2,7 +2,6 @@ package eventstore_test
 
 import (
 	"encoding/json"
-	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -11,18 +10,6 @@ import (
 
 	"github.com/deepworx/go-utils/pkg/eventsourcing/eventstore"
 )
-
-// recordingTB captures failures so CheckCodec's own failures can be asserted.
-type recordingTB struct {
-	testing.TB
-	errors []string
-}
-
-func (r *recordingTB) Helper() {}
-
-func (r *recordingTB) Errorf(format string, args ...any) {
-	r.errors = append(r.errors, fmt.Sprintf(format, args...))
-}
 
 type lineItem struct {
 	SKU      string            `json:"sku"`
@@ -107,29 +94,40 @@ func TestCheckCodec(t *testing.T) {
 				"round trip",
 			},
 		},
+		{
+			name: "every broken event type is reported",
+			register: func(c *eventstore.Codec) {
+				eventstore.Register[orderShipped](c)
+				eventstore.Register[stringBlocked](c)
+			},
+			wantErrors: []string{
+				`"order.shipped"`,
+				"Carrier",
+				`"order.blocked"`,
+				"round trip",
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			c := eventstore.NewCodec()
 			tt.register(c)
-			rec := &recordingTB{TB: t}
 
-			eventstore.CheckCodec(rec, c)
+			err := eventstore.CheckCodec(c)
 
 			if len(tt.wantErrors) == 0 {
-				if len(rec.errors) > 0 {
-					t.Fatalf("CheckCodec failed: %v", rec.errors)
+				if err != nil {
+					t.Fatalf("CheckCodec() = %v, want nil", err)
 				}
 				return
 			}
-			if len(rec.errors) == 0 {
-				t.Fatal("CheckCodec did not fail")
+			if err == nil {
+				t.Fatal("CheckCodec() = nil, want an error")
 			}
-			all := strings.Join(rec.errors, "\n")
 			for _, want := range tt.wantErrors {
-				if !strings.Contains(all, want) {
-					t.Errorf("CheckCodec errors %q do not mention %q", all, want)
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("CheckCodec() = %q, does not mention %q", err, want)
 				}
 			}
 		})
@@ -141,11 +139,8 @@ func TestCheckCodecRoundTripsWithUpcasters(t *testing.T) {
 
 	c := eventstore.NewCodec()
 	registerTaskTitled(c)
-	rec := &recordingTB{TB: t}
 
-	eventstore.CheckCodec(rec, c)
-
-	if len(rec.errors) > 0 {
-		t.Fatalf("CheckCodec failed: %v", rec.errors)
+	if err := eventstore.CheckCodec(c); err != nil {
+		t.Fatalf("CheckCodec() = %v, want nil", err)
 	}
 }

@@ -22,6 +22,7 @@ ADR-0007 still holds for everything the event log drives: Reactors stay at-least
 ## Consequences
 
 - `docs/postgres/schema.sql` gains `processed_commands` with an index on `recorded_at`; `recorded_at` comes from the store clock (`WithClock`). The service schedules the cleanup (`CommandCleanupJob`, default retention 30 days), and a repeat after cleanup runs the command again, so the retention bounds how long a client may buffer a command.
+- A Command ID covers client retries within the retention, not an effect that must happen only once, such as a seed or one-time setup; a fixed Command ID runs again after cleanup. Guard such an effect with Stream state instead: `Repository.Create` on a deterministic Stream ID, with `ErrAlreadyExists` meaning "already done", or an Aggregate state guard that rejects the repeat, such as `todo.ErrAlreadyDone`.
 - `CommandOption` replaces `UpdateOption`, and `Create` accepts it too. `ExpectVersion` is a `CommandOption`; `Create` ignores it, since it always expects an empty Stream.
 - A deduplicated command costs one lookup and one insert in its Command transaction.
 - On Postgres a Command ID conflict aborts the whole Command transaction, including a caller's outer one, since no savepoint guards the insert.

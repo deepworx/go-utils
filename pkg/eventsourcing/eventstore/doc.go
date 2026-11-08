@@ -12,8 +12,8 @@
 //		return nil
 //	}))
 //
-// A service test calls CheckCodec(t, codec) to catch missing json tags and
-// lossy round trips before they reach production.
+// A service test calls CheckCodec(codec) and fails on its error to catch
+// missing json tags and lossy round trips before they reach production.
 //
 // A Repository runs each command in a Command transaction on one Stream:
 //

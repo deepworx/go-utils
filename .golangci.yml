@@ -17,6 +17,7 @@ linters:
     - unconvert
     - usestdlibvars
     - depguard
+    - forbidigo
   settings:
     depguard:
       rules:
@@ -47,6 +48,14 @@ linters:
           deny:
             - pkg: testing
               desc: aggregatetest leaves assertions to the caller
+        eventstore-no-testing:
+          list-mode: lax
+          files:
+            - "**/pkg/eventsourcing/eventstore/*.go"
+            - "!$test"
+          deny:
+            - pkg: testing
+              desc: eventstore is linked into service binaries; return errors and leave assertions to the caller
         aggregate-access:
           list-mode: lax
           files:
@@ -57,10 +66,33 @@ linters:
           deny:
             - pkg: github.com/deepworx/go-utils/internal/aggregateaccess
               desc: only eventstore and aggregatetest may reach Aggregate internals
+        quickstart-app-no-pgx:
+          list-mode: lax
+          files:
+            - "**/internal/quickstart/app/**"
+            # PgReadModel is a quickstart exception; see ADR-0016.
+            - "!**/internal/quickstart/app/readmodel.go"
+            - "!$test"
+          deny:
+            - pkg: github.com/jackc/pgx/v5
+              desc: the app layer stays free of pgx; see ADR-0016
+    forbidigo:
+      analyze-types: true
+      forbid:
+        - pattern: ^eventstore\.NewPg
+          pkg: ^github\.com/deepworx/go-utils/pkg/eventsourcing/eventstore$
+          msg: wire the Postgres eventstore in the server, not the app layer; see ADR-0016
   exclusions:
     generated: lax
     presets:
       - std-error-handling
+    rules:
+      - path-except: internal/quickstart/app/
+        linters:
+          - forbidigo
+      - path: internal/quickstart/app/.+_test\.go$
+        linters:
+          - forbidigo
 
 formatters:
   enable:
