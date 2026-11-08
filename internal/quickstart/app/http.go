@@ -2,16 +2,17 @@ package app
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
 
+	"connectrpc.com/connect/v2"
 	"github.com/google/uuid"
 
 	"github.com/deepworx/go-utils/internal/quickstart/todo"
+	connecterrors "github.com/deepworx/go-utils/pkg/connectrpc/errors"
 	"github.com/deepworx/go-utils/pkg/ctxutil"
 	"github.com/deepworx/go-utils/pkg/eventsourcing/eventstore"
 )
@@ -122,20 +123,23 @@ func ParsePosition(s string) (eventstore.Cursor, error) {
 	return c, nil
 }
 
+// errorRules maps the App's errors to Connect codes. A Connect handler
+// would pass the same table to the errors interceptor.
+var errorRules = connecterrors.WithRules(
+	connecterrors.Is(todo.ErrNoTitle, connect.CodeInvalidArgument),
+	connecterrors.Is(eventstore.ErrNotFound, connect.CodeNotFound),
+	// AlreadyExists rather than FailedPrecondition, which Connect sends as 400.
+	connecterrors.Is(todo.ErrAlreadyDone, connect.CodeAlreadyExists),
+	connecterrors.Is(eventstore.ErrConcurrencyConflict, connect.CodeAborted),
+)
+
 func writeError(w http.ResponseWriter, r *http.Request, err error) {
-	switch {
-	case errors.Is(err, todo.ErrNoTitle):
-		http.Error(w, todo.ErrNoTitle.Error(), http.StatusBadRequest)
-	case errors.Is(err, eventstore.ErrNotFound):
-		http.Error(w, "task not found", http.StatusNotFound)
-	case errors.Is(err, todo.ErrAlreadyDone):
-		http.Error(w, todo.ErrAlreadyDone.Error(), http.StatusConflict)
-	case errors.Is(err, eventstore.ErrConcurrencyConflict):
-		http.Error(w, "task changed concurrently, retry", http.StatusConflict)
-	default:
+	mapped := connecterrors.Map(err, errorRules)
+	status := connecterrors.HTTPStatus(mapped.Code())
+	if status >= http.StatusInternalServerError {
 		slog.ErrorContext(r.Context(), "request failed", slog.String("error", err.Error()))
-		http.Error(w, "internal error", http.StatusInternalServerError)
 	}
+	http.Error(w, mapped.Message(), status)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

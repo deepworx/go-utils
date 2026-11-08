@@ -295,34 +295,45 @@ Generated IDs are UUID v4 without hyphens (32 characters).
 
 Maps errors to Connect RPC codes. Unmapped errors return `CodeInternal` with sanitized message.
 
+The service passes an ordered table of rules at its edge, so domain and app errors stay plain sentinels and types without importing `connectrpc.com/connect`:
+
 ```go
-server := connect.NewServer(errors.NewInterceptor())
+rules := errors.WithRules(
+    // Recommended for go-utils' own sentinels:
+    errors.Is(eventstore.ErrNotFound, connect.CodeNotFound).WithReason("NOT_FOUND"),
+    errors.Is(eventstore.ErrAlreadyExists, connect.CodeAlreadyExists),
+    errors.Is(eventstore.ErrConcurrencyConflict, connect.CodeAborted),
+    errors.Is(eventstore.ErrCommandIDReused, connect.CodeFailedPrecondition),
+    // The service's own errors:
+    errors.As[*domain.ValidationError](connect.CodeInvalidArgument),
+)
+
+server := connect.NewServer(errors.NewInterceptor(rules, errors.WithDomain("tasks.example.com")))
 servicepb.RegisterServiceHandler(server, &Server{})
 connecthttp.Mount(mux, server)
 ```
 
-Implement `ConnectCoder` on errors:
-
-```go
-type ErrNotFound struct{ ID string }
-
-func (e *ErrNotFound) Error() string {
-    return fmt.Sprintf("resource %s not found", e.ID)
-}
-
-func (e *ErrNotFound) ConnectCode() connect.Code {
-    return connect.CodeNotFound
-}
-```
+- `Is(target, code)` matches with `errors.Is`; `As[T](code)` matches with `errors.As`. Rules are tried in order and the first match wins.
+- `WithReason(reason)` attaches a `google.rpc.ErrorInfo` detail with that `Reason` and the `Domain` set by `WithDomain` (empty without it). A rule without a reason attaches no detail.
+- go-utils ships no default rules; the service owns its table.
+- With `interceptor.BuildDefault`, pass the same options through `interceptor.WithErrors(rules, ...)`.
 
 Error mapping priority:
 1. `context.Canceled` → `CodeCanceled`
 2. `context.DeadlineExceeded` → `CodeDeadlineExceeded`
-3. `ConnectCoder` interface → custom code
-4. `*connect.Error` → preserved
-5. Other errors → `CodeInternal` (message: "internal error")
+3. Rules from `WithRules`, in order → code of the first match
+4. `ConnectCoder` interface → custom code (deprecated, use `WithRules`)
+5. `*connect.Error` → preserved
+6. Other errors → `CodeInternal` (message: "internal error")
 
-Mapped errors (1-4) preserve original message. Unmapped errors (5) hide details; the original error stays available server-side as the cause (`errors.Is`/`errors.As`).
+Mapped errors (1-4) preserve original message. Unmapped errors (6) hide details; the original error stays available server-side as the cause (`errors.Is`/`errors.As`).
+
+A plain HTTP handler reuses the same rules with `Map` and `HTTPStatus`, which returns the HTTP status the Connect protocol assigns to a code:
+
+```go
+mapped := errors.Map(err, rules)
+http.Error(w, mapped.Message(), errors.HTTPStatus(mapped.Code()))
+```
 
 ### connectrpc/deadline
 
@@ -348,6 +359,7 @@ interceptors, _ := interceptor.BuildDefault()                      // 7 intercep
 interceptors, _ := interceptor.BuildDefaultWithAuth(auth)          // 8 interceptors (with JWT)
 interceptors, _ := interceptor.BuildDefault(                       // with options
     interceptor.WithDeadline(deadline.Config{DefaultTimeout: 60 * time.Second}),
+    interceptor.WithErrors(rules, errors.WithDomain("tasks.example.com")), // see connectrpc/errors
 )
 
 server := connect.NewServer(interceptors...)

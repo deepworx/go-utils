@@ -106,7 +106,7 @@ func TestMapError(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			result := mapError(tt.err)
+			result := Map(tt.err)
 
 			if result.Code() != tt.wantCode {
 				t.Errorf("code = %v, want %v", result.Code(), tt.wantCode)

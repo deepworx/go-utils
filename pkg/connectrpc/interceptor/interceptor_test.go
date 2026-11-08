@@ -9,6 +9,7 @@ import (
 
 	"github.com/deepworx/go-utils/internal/connecttest"
 	"github.com/deepworx/go-utils/pkg/connectrpc/deadline"
+	connecterrors "github.com/deepworx/go-utils/pkg/connectrpc/errors"
 	"github.com/deepworx/go-utils/pkg/connectrpc/jwtauth"
 	"github.com/deepworx/go-utils/pkg/connectrpc/requestid"
 	"github.com/deepworx/go-utils/pkg/ctxutil"
@@ -121,6 +122,68 @@ func TestBuildDefaultWithAuth_WithOptions(t *testing.T) {
 	}
 	if len(interceptors) != 8 {
 		t.Errorf("BuildDefaultWithAuth() returned %d interceptors, want 8", len(interceptors))
+	}
+}
+
+func TestBuildDefault_ErrorRules(t *testing.T) {
+	t.Parallel()
+
+	errMissing := errors.New("missing")
+	tests := []struct {
+		name        string
+		opts        []Option
+		wantCode    connect.Code
+		wantMessage string
+	}{
+		{
+			name:        "default mapping sanitizes the error",
+			wantCode:    connect.CodeInternal,
+			wantMessage: "internal error",
+		},
+		{
+			name: "rules passed through WithErrors",
+			opts: []Option{
+				WithErrors(connecterrors.WithRules(connecterrors.Is(errMissing, connect.CodeNotFound))),
+			},
+			wantCode:    connect.CodeNotFound,
+			wantMessage: "missing",
+		},
+		{
+			name: "WithErrors options accumulate",
+			opts: []Option{
+				WithErrors(connecterrors.WithRules(connecterrors.Is(errMissing, connect.CodeNotFound))),
+				WithErrors(connecterrors.WithRules(connecterrors.Is(errMissing, connect.CodeAborted))),
+			},
+			wantCode:    connect.CodeNotFound,
+			wantMessage: "missing",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			interceptors, err := BuildDefault(tt.opts...)
+			if err != nil {
+				t.Fatalf("BuildDefault() error = %v", err)
+			}
+			err = connecttest.Serve(context.Background(), connecttest.Call{
+				Handler: func(context.Context, connect.Spec, connect.ServerStream) error {
+					return errMissing
+				},
+			}, interceptors...)
+
+			connectErr, ok := errors.AsType[*connect.Error](err)
+			if !ok {
+				t.Fatalf("expected connect.Error, got %T", err)
+			}
+			if connectErr.Code() != tt.wantCode {
+				t.Errorf("code = %v, want %v", connectErr.Code(), tt.wantCode)
+			}
+			if connectErr.Message() != tt.wantMessage {
+				t.Errorf("message = %q, want %q", connectErr.Message(), tt.wantMessage)
+			}
+		})
 	}
 }
 

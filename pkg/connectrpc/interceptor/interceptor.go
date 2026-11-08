@@ -20,6 +20,7 @@ import (
 type Options struct {
 	deadlineCfg  *deadline.Config
 	requestIDCfg *requestid.Config
+	errorOpts    []errors.Option
 }
 
 // Option configures the interceptor builder.
@@ -36,6 +37,15 @@ func WithDeadline(cfg deadline.Config) Option {
 func WithRequestID(cfg requestid.Config) Option {
 	return func(o *Options) {
 		o.requestIDCfg = &cfg
+	}
+}
+
+// WithErrors passes opts to the errors interceptor, for example
+// errors.WithRules and errors.WithDomain. Without it the errors interceptor
+// keeps its default mapping. Options of repeated calls accumulate in order.
+func WithErrors(opts ...errors.Option) Option {
+	return func(o *Options) {
+		o.errorOpts = append(o.errorOpts, opts...)
 	}
 }
 
@@ -104,7 +114,7 @@ func buildChain(o *Options, auth *jwtauth.Authenticator) ([]connect.ServerInterc
 	interceptors = append(interceptors, validate.NewServerInterceptor())
 
 	// 8. Errors - always last, maps all errors to Connect codes
-	interceptors = append(interceptors, errors.NewInterceptor())
+	interceptors = append(interceptors, errors.NewInterceptor(o.errorOpts...))
 
 	return interceptors, nil
 }
