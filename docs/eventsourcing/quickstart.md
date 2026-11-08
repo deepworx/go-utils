@@ -145,12 +145,17 @@ func Codec() *eventstore.Codec {
 	return c
 }
 
-func TestCodec(t *testing.T) { eventstore.CheckCodec(t, app.Codec()) }
+func TestCodec(t *testing.T) {
+	if err := eventstore.CheckCodec(app.Codec()); err != nil {
+		t.Fatal(err)
+	}
+}
 ```
 
-`CheckCodec` fails on exported fields without a `json` tag and on lossy round
-trips. To change an event's shape, register an Upcaster. That raises the
-event's Schema version by one, and stored events are upcast on every read:
+`CheckCodec` returns one error that lists every problem it finds, such as an
+exported field without a `json` tag or a lossy round trip, each with its event
+type. To change an event's shape, register an Upcaster. That raises the event's
+Schema version by one, and stored events are upcast on every read:
 
 ```go
 eventstore.Register[todo.TaskOpened](c, eventstore.UpcastObject(func(m map[string]any) error {

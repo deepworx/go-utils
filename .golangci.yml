@@ -47,6 +47,14 @@ linters:
           deny:
             - pkg: testing
               desc: aggregatetest leaves assertions to the caller
+        eventstore-no-testing:
+          list-mode: lax
+          files:
+            - "**/pkg/eventsourcing/eventstore/*.go"
+            - "!$test"
+          deny:
+            - pkg: testing
+              desc: eventstore is linked into service binaries; return errors and leave assertions to the caller
         aggregate-access:
           list-mode: lax
           files:
