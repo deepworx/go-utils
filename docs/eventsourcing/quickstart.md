@@ -914,3 +914,4 @@ version bump.
 | [0010](../adr/0010-event-metadata-actor-correlation-causation.md) | Event metadata: actor, correlation and causation |
 | [0011](../adr/0011-leases-are-not-fences.md) | Leases are not fences: holders fence their own writes |
 | [0015](../adr/0015-inbox-messages-are-deduplicated-per-source-and-tenant.md) | Inbox messages are deduplicated per Source and Tenant |
+| [0016](../adr/0016-eventstore-is-one-package-guarded-by-lint.md) | Eventstore is one package, and lint guards the app layer |
