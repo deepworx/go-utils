@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.9.0](https://github.com/deepworx/go-utils/compare/v0.8.0...v0.9.0) (2026-11-27)
+
+
+### ⚠ BREAKING CHANGES
+
+* keep transport types out of the app layer (DWX-589) ([#67](https://github.com/deepworx/go-utils/issues/67))
+
+### Features
+
+* keep transport types out of the app layer (DWX-589) ([#67](https://github.com/deepworx/go-utils/issues/67)) ([b1398c5](https://github.com/deepworx/go-utils/commit/b1398c5f9efdc0f66952e29d329983bfe21c3c41))
+
+
+### Bug Fixes
+
+* **deps:** update google.golang.org/genproto/googleapis/rpc digest to 09e21b2 ([#71](https://github.com/deepworx/go-utils/issues/71)) ([e4087af](https://github.com/deepworx/go-utils/commit/e4087af2eb25434343adad5872df0c9b1faa0e72))
+* **deps:** update google.golang.org/genproto/googleapis/rpc digest to 1e707ab ([#77](https://github.com/deepworx/go-utils/issues/77)) ([dea0fe7](https://github.com/deepworx/go-utils/commit/dea0fe79c6ded3ae3d966621fb82f8ffbffea797))
+* **deps:** update google.golang.org/genproto/googleapis/rpc digest to c8830f6 ([#76](https://github.com/deepworx/go-utils/issues/76)) ([3d2e4e5](https://github.com/deepworx/go-utils/commit/3d2e4e566eb5af6345563013dc0102bd9fee199f))
+* **deps:** update google.golang.org/genproto/googleapis/rpc digest to d1e00e9 ([#68](https://github.com/deepworx/go-utils/issues/68)) ([690dee2](https://github.com/deepworx/go-utils/commit/690dee2c0fe0c0b5dd7630f8c8522b747c077449))
+* **deps:** update module connectrpc.com/connect/v2 to v2.0.2 ([#62](https://github.com/deepworx/go-utils/issues/62)) ([39b69b5](https://github.com/deepworx/go-utils/commit/39b69b525143522c1b13426c0b2a3caa29f7a317))
+* **deps:** update module connectrpc.com/grpchealth/v2 to v2.1.0 ([#73](https://github.com/deepworx/go-utils/issues/73)) ([340e540](https://github.com/deepworx/go-utils/commit/340e54078c4a233c13325cef42446cc11c64dd68))
+* **deps:** update module github.com/jackc/pgx/v5 to v5.12.0 ([#66](https://github.com/deepworx/go-utils/issues/66)) ([e29f49e](https://github.com/deepworx/go-utils/commit/e29f49e1192953ea1457adb49bf32fcee0b2b821))
+* **deps:** update module github.com/jackc/pgx/v5 to v5.13.0 ([#72](https://github.com/deepworx/go-utils/issues/72)) ([bd431f4](https://github.com/deepworx/go-utils/commit/bd431f415aff1b27a487f98c4152cb0b481311ec))
+* **deps:** update module github.com/lestrrat-go/jwx/v4 to v4.6.0 ([#63](https://github.com/deepworx/go-utils/issues/63)) ([3121f97](https://github.com/deepworx/go-utils/commit/3121f97cc1f84a531e53e56dd87939d0e9a833cc))
+* **deps:** update module github.com/nats-io/nats.go to v1.55.0 ([#64](https://github.com/deepworx/go-utils/issues/64)) ([0d8ef91](https://github.com/deepworx/go-utils/commit/0d8ef916749eb324aebb5caef1d8593bf0d2a0e5))
+* **deps:** update module github.com/nats-io/nats.go to v1.56.0 ([#75](https://github.com/deepworx/go-utils/issues/75)) ([3011447](https://github.com/deepworx/go-utils/commit/3011447ec37c5299e386db1076d4055cd3f02167))
+* **deps:** update module golang.org/x/sync to v0.25.0 ([#70](https://github.com/deepworx/go-utils/issues/70)) ([6e14a56](https://github.com/deepworx/go-utils/commit/6e14a56b19d1345458405adb8a46d6025fec7f89))
+* **deps:** update testcontainers-go monorepo to v0.45.0 ([#69](https://github.com/deepworx/go-utils/issues/69)) ([209733c](https://github.com/deepworx/go-utils/commit/209733c542e886eef9f7cdef0f2c28802124e245))
+
 ## [0.8.0](https://github.com/deepworx/go-utils/compare/v0.7.0...v0.8.0) (2026-10-18)
 
 
